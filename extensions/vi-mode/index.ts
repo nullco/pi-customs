@@ -408,7 +408,7 @@ class ViEditor extends CustomEditor {
 		this.viTheme = theme;
 	}
 
-	private mode: Mode = "normal";
+	private mode: Mode = "insert";
 	private pendingOp: PendingOp | null = null;
 	/** For two-key sequences (gg, yy) and operators awaiting motion. */
 	private pendingKey: string | null = null;
