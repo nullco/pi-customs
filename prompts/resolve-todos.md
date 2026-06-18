@@ -1,6 +1,6 @@
 ---
-description: Resolve every "TODO: pi:" comment in the current project — implement each requested change, then remove the comment. Language-agnostic. Hand-triggered; does not auto-invoke.
-argument-hint: "[path | --list | --dry-run]"
+description: 'Resolve every "TODO: pi:" comment in the current project — implement each requested change, then remove the comment. Language-agnostic. Hand-triggered; does not auto-invoke.'
+argument-hint: '[path | --list | --dry-run]'
 ---
 
 # resolve-todos
