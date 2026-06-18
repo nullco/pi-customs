@@ -70,6 +70,9 @@ import { ViEditor } from "./editor";
 
 export default function (pi: ExtensionAPI) {
     pi.on("session_start", (_event, ctx) => {
-        ctx.ui.setEditorComponent((tui, theme, kb) => new ViEditor(tui, theme, kb));
+        // Capture the full live Theme (reflects theme switches / hot-reload) so the
+        // editor can use colors beyond the EditorTheme's borderColor (e.g. `dim`).
+        const fullTheme = ctx.ui.theme;
+        ctx.ui.setEditorComponent((tui, theme, kb) => new ViEditor(tui, theme, kb, fullTheme));
     });
 }

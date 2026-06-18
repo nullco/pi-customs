@@ -23,10 +23,12 @@ import {
 
 export class ViEditor extends CustomEditor {
     private viTheme: any;
+    private fullTheme: any;
 
-    constructor(tui: any, theme: any, kb: any) {
+    constructor(tui: any, theme: any, kb: any, fullTheme: any) {
         super(tui, theme, kb);
         this.viTheme = theme;
+        this.fullTheme = fullTheme;
     }
 
     private mode: Mode = "insert";
@@ -796,7 +798,10 @@ export class ViEditor extends CustomEditor {
             rawLabel = " NORMAL ";
         }
 
-        const label = this.viTheme.borderColor(rawLabel);
+        // Use the footer's text color (`dim`) for the mode label — it stays
+        // readable across themes, unlike borderMuted which is near-invisible on
+        // dark surfaces (e.g. tokyonight-storm).
+        const label = this.fullTheme?.fg("dim", rawLabel) ?? this.viTheme.borderColor(rawLabel);
 
         // Insert label into the top border line and truncate if needed
         if (lines[0] !== undefined && visibleWidth(lines[0]) >= visibleWidth(label)) {
