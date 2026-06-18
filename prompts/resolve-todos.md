@@ -5,12 +5,16 @@ argument-hint: '[path | --list | --dry-run]'
 
 # resolve-todos
 
+You are being invoked via `/resolve-todos`. Treat the body below as your task
+and execute it immediately in the cwd; do not search for or load a skill file
+— the text has already been expanded for you.
+
 Scan the **current project (cwd)** for `TODO: pi:` comments, implement what
 each asks for, then delete the comment. Work one TODO at a time. The marker is
 plain text, so this works in any language or file format.
 
-Everything runs in the user's project. Never scan or modify the pi-customs
-package itself.
+Everything runs in the current project (cwd). If cwd is not the pi-customs
+repo, do not scan or modify the pi-customs package itself — stay within cwd.
 
 ## Arguments (from $@)
 
