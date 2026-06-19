@@ -1,8 +1,8 @@
 /**
  * Powerline Footer Extension - replaces the default pi footer with a
  * powerline-style statusline: colored segments joined by triangle separators
- * (, ), with model / git branch / cwd on the left and token usage / cost /
- * extension statuses on the right.
+ * (, ), with git branch / cwd / extension statuses on the left and token
+ * usage / cost / model on the right.
  *
  * Requires a powerline-patched font for the triangle (U+E0B0/U+E0B2) and
  * branch (U+E0A0) glyphs.
@@ -220,9 +220,6 @@ function buildSegments(
     const left: Segment[] = [];
     const right: Segment[] = [];
 
-    // Model
-    left.push({ text: ctx.model?.id ?? "no-model", bg: "accent" });
-
     // Git branch
     const branch = footerData.getGitBranch();
     if (branch) {
@@ -231,6 +228,15 @@ function buildSegments(
 
     // Working directory
     left.push({ text: shortenPath(ctx.cwd), bg: "warning" });
+
+    // Extension statuses (set via ctx.ui.setStatus by other extensions)
+    const statuses = footerData.getExtensionStatuses();
+    if (statuses.size > 0) {
+        left.push({
+            text: [...statuses.values()].join(" │ "),
+            bg: "borderAccent",
+        });
+    }
 
     // Token usage
     const usage = sumUsage(ctx);
@@ -244,14 +250,8 @@ function buildSegments(
         right.push({ text: `$${usage.cost.toFixed(3)}`, bg: "error" });
     }
 
-    // Extension statuses (set via ctx.ui.setStatus by other extensions)
-    const statuses = footerData.getExtensionStatuses();
-    if (statuses.size > 0) {
-        right.push({
-            text: [...statuses.values()].join(" │ "),
-            bg: "borderAccent",
-        });
-    }
+    // Model (rightmost segment)
+    right.push({ text: ctx.model?.id ?? "no-model", bg: "accent" });
 
     return { left, right };
 }
