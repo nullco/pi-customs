@@ -73,13 +73,11 @@ export default function (pi: ExtensionAPI) {
         // Capture the full live Theme (reflects theme switches / hot-reload) so the
         // editor can use colors beyond the EditorTheme's borderColor (e.g. `dim`).
         const fullTheme = ctx.ui.theme;
-        // The "!" prefix forces the status to sort first in the footer so the
-        // vi mode indicator appears leftmost among extension statuses.
-        const setStatus = (text: string | undefined) => ctx.ui.setStatus("!vi-mode", text);
+        const setStatus = (text: string | undefined) => ctx.ui.setStatus("vi-mode", text);
         ctx.ui.setEditorComponent((tui, theme, kb) => new ViEditor(tui, theme, kb, fullTheme, setStatus));
     });
 
     pi.on("session_shutdown", (_event, ctx) => {
-        ctx.ui.setStatus("!vi-mode", undefined);
+        ctx.ui.setStatus("vi-mode", undefined);
     });
 }
