@@ -1,7 +1,7 @@
 /**
  * Powerline Footer Extension - replaces the default pi footer with a
  * powerline-style statusline: colored segments joined by triangle separators
- * ( , ), with model / git branch / cwd on the left and token usage / cost /
+ * (, ), with model / git branch / cwd on the left and token usage / cost /
  * extension statuses on the right.
  *
  * Requires a powerline-patched font for the triangle (U+E0B0/U+E0B2) and
@@ -11,8 +11,10 @@
  * .pi/extensions/) and /reload. The footer auto-enables on session start.
  * Toggle with the /powerline command.
  *
- * Segments use the active theme's background colors, so the bar adapts to
- * theme switches and hot-reload.
+ * Segments use the active theme's accent / success / warning / error / muted
+ * foreground colors as backgrounds, so the bar stays theme-aware while using
+ * proper, high-contrast powerline colors. Text color is chosen automatically
+ * (white or black) for readability.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -21,52 +23,125 @@ import type {
     ExtensionContext,
     ReadonlyFooterDataProvider,
     Theme,
-    ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 // ── Powerline glyphs (need a powerline-patched font) ──────────────────────────
-const RIGHT_TRIANGLE = "\uE0B0"; //  - separator pointing right (left side)
-const LEFT_TRIANGLE = "\uE0B2"; //  - separator pointing left (right side)
-const BRANCH_GLYPH = "\uE0A0"; //  - git branch
+const RIGHT_TRIANGLE = "\uE0B0"; //  - separator pointing right (left side)
+const LEFT_TRIANGLE = "\uE0B2"; //  - separator pointing left (right side)
+const BRANCH_GLYPH = "\uE0A0"; //  - git branch
 
-// The theme exposes six background colors; reuse them as segment backgrounds.
-type BgColor =
-    | "selectedBg"
-    | "userMessageBg"
-    | "customMessageBg"
-    | "toolPendingBg"
-    | "toolSuccessBg"
-    | "toolErrorBg";
+// Theme foreground colors reused as powerline segment backgrounds. These are
+// the "proper" statusline colors: blue, green, yellow, gray, red, cyan.
+type SegmentBg =
+    | "accent"
+    | "success"
+    | "warning"
+    | "muted"
+    | "error"
+    | "borderAccent";
 
 interface Segment {
-    text: string; // raw (no ANSI), kept short
-    bg: BgColor;
-    fg: ThemeColor;
+    text: string;
+    bg: SegmentBg;
 }
 
 // ── ANSI helpers ──────────────────────────────────────────────────────────────
 
-/**
- * Return the ANSI code that sets `bg` as a *foreground* color.
- * getBgAnsi emits `\x1b[48;...m` (background); swapping the `48;` prefix to
- * `38;` turns it into the equivalent foreground code. This lets a separator
- * glyph adopt the next segment's background as its foreground, producing the
- * seamless powerline transition.
- */
-function bgAsFgAnsi(theme: Theme, bg: BgColor): string {
-    return theme.getBgAnsi(bg).replace("48;", "38;");
+const RESET = "\x1b[0m";
+const DEFAULT_BG = "\x1b[49m";
+const BOLD = "\x1b[1m";
+
+/** Convert a ThemeColor into a background ANSI sequence. */
+function bgAnsi(theme: Theme, color: SegmentBg): string {
+    return theme.getFgAnsi(color).replace("38;", "48;");
 }
 
-/** A segment's content cell: ` text ` on the segment's bg/fg. No trailing reset. */
+/** Convert a ThemeColor into a foreground ANSI sequence. */
+function fgAnsi(theme: Theme, color: SegmentBg): string {
+    return theme.getFgAnsi(color);
+}
+
+// ── Contrast-aware text color ─────────────────────────────────────────────────
+
+const ANSI_TRUECOLOR_WHITE = "\x1b[38;2;255;255;255m";
+const ANSI_TRUECOLOR_BLACK = "\x1b[38;2;0;0;0m";
+const ANSI_256_WHITE = "\x1b[38;5;15m";
+const ANSI_256_BLACK = "\x1b[38;5;0m";
+
+function index256ToRgb(index: number): { r: number; g: number; b: number } {
+    if (index < 16) {
+        // Standard / high-intensity colors (approximate common terminal values)
+        const table = [
+            [0, 0, 0],
+            [205, 49, 49],
+            [13, 188, 121],
+            [229, 229, 16],
+            [36, 114, 200],
+            [188, 63, 188],
+            [17, 168, 205],
+            [229, 229, 229],
+            [102, 102, 102],
+            [241, 76, 76],
+            [35, 209, 139],
+            [245, 245, 67],
+            [59, 142, 234],
+            [214, 112, 214],
+            [41, 184, 219],
+            [255, 255, 255],
+        ];
+        const c = table[index] ?? [0, 0, 0];
+        return { r: c[0], g: c[1], b: c[2] };
+    }
+    if (index < 232) {
+        const n = index - 16;
+        const r = Math.floor(n / 36);
+        const g = Math.floor((n % 36) / 6);
+        const b = n % 6;
+        const values = [0, 95, 135, 175, 215, 255];
+        return { r: values[r], g: values[g], b: values[b] };
+    }
+    const gray = 8 + (index - 232) * 10;
+    return { r: gray, g: gray, b: gray };
+}
+
+function ansiToRgb(ansi: string): { r: number; g: number; b: number } | undefined {
+    const tc = ansi.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
+    if (tc) {
+        return { r: +tc[1], g: +tc[2], b: +tc[3] };
+    }
+    const c256 = ansi.match(/\x1b\[38;5;(\d+)m/);
+    if (c256) {
+        return index256ToRgb(+c256[1]);
+    }
+    return undefined;
+}
+
+function isLight(rgb: { r: number; g: number; b: number }): boolean {
+    const y = (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
+    return y > 0.55;
+}
+
+/** Pick white or black text for the given segment background. */
+function textFgAnsi(theme: Theme, bg: SegmentBg): string {
+    const rgb = ansiToRgb(theme.getFgAnsi(bg));
+    const light = rgb ? isLight(rgb) : false;
+    if (theme.getColorMode() === "truecolor") {
+        return light ? ANSI_TRUECOLOR_BLACK : ANSI_TRUECOLOR_WHITE;
+    }
+    return light ? ANSI_256_BLACK : ANSI_256_WHITE;
+}
+
+/** A segment's content cell: ` text ` on the segment's bg with bold text. */
 function segmentCell(theme: Theme, s: Segment): string {
-    return `${theme.getBgAnsi(s.bg)}${theme.getFgAnsi(s.fg)} ${s.text} `;
+    return `${bgAnsi(theme, s.bg)}${textFgAnsi(theme, s.bg)}${BOLD} ${s.text} `;
 }
 
 /**
- * Render the left group. Segments flow left→right; each is followed by a
- * right-pointing triangle (U+E0B0) whose bg is the current segment and whose
- * fg is the next segment's bg (or default for the trailing one).
+ * Render the left group. Each separator uses the *current* segment's color as
+ * the triangle foreground and the *next* segment's color (or the terminal
+ * default background) as the cell background. This is the correct orientation
+ * for U+E0B0.
  */
 function renderLeft(theme: Theme, segs: Segment[]): string {
     if (segs.length === 0) return "";
@@ -74,30 +149,32 @@ function renderLeft(theme: Theme, segs: Segment[]): string {
     for (let i = 0; i < segs.length; i++) {
         out += segmentCell(theme, segs[i]);
         if (i < segs.length - 1) {
-            out += `${theme.getBgAnsi(segs[i].bg)}${bgAsFgAnsi(theme, segs[i + 1].bg)}${RIGHT_TRIANGLE}`;
+            out += `${bgAnsi(theme, segs[i + 1].bg)}${fgAnsi(theme, segs[i].bg)}${RIGHT_TRIANGLE}`;
         } else {
-            // Trailing triangle fades into the default background.
-            out += `${theme.getBgAnsi(segs[i].bg)}\x1b[39m${RIGHT_TRIANGLE}`;
+            // Trailing triangle fades into the terminal's default background.
+            out += `${DEFAULT_BG}${fgAnsi(theme, segs[i].bg)}${RIGHT_TRIANGLE}`;
         }
     }
-    return `${out}\x1b[49m\x1b[39m`;
+    return `${out}${RESET}`;
 }
 
 /**
- * Render the right group. Starts with a left-pointing triangle (U+E0B2) that
- * enters from the default background, then segments separated by U+E0B2
- * triangles whose bg is the next segment and whose fg is the current one.
+ * Render the right group. Starts with a left-pointing triangle that enters
+ * from the default background, then segments separated by U+E0B2 triangles.
+ * Because U+E0B2 points left, the triangle itself takes the *next* segment's
+ * color and the cell background takes the current/default color.
  */
 function renderRight(theme: Theme, segs: Segment[]): string {
     if (segs.length === 0) return "";
-    let out = `${theme.getBgAnsi(segs[0].bg)}\x1b[39m${LEFT_TRIANGLE}`;
+    // Enter from the default background: triangle is the first segment color.
+    let out = `${fgAnsi(theme, segs[0].bg)}${DEFAULT_BG}${LEFT_TRIANGLE}`;
     for (let i = 0; i < segs.length; i++) {
         out += segmentCell(theme, segs[i]);
         if (i < segs.length - 1) {
-            out += `${theme.getBgAnsi(segs[i + 1].bg)}${bgAsFgAnsi(theme, segs[i].bg)}${LEFT_TRIANGLE}`;
+            out += `${fgAnsi(theme, segs[i + 1].bg)}${bgAnsi(theme, segs[i].bg)}${LEFT_TRIANGLE}`;
         }
     }
-    return `${out}\x1b[49m\x1b[39m`;
+    return `${out}${RESET}`;
 }
 
 // ── Data helpers ──────────────────────────────────────────────────────────────
@@ -144,28 +221,27 @@ function buildSegments(
     const right: Segment[] = [];
 
     // Model
-    left.push({ text: ctx.model?.id ?? "no-model", bg: "toolPendingBg", fg: "accent" });
+    left.push({ text: ctx.model?.id ?? "no-model", bg: "accent" });
 
     // Git branch
     const branch = footerData.getGitBranch();
     if (branch) {
-        left.push({ text: `${BRANCH_GLYPH} ${branch}`, bg: "toolSuccessBg", fg: "text" });
+        left.push({ text: `${BRANCH_GLYPH} ${branch}`, bg: "success" });
     }
 
     // Working directory
-    left.push({ text: shortenPath(ctx.cwd), bg: "customMessageBg", fg: "text" });
+    left.push({ text: shortenPath(ctx.cwd), bg: "warning" });
 
     // Token usage
     const usage = sumUsage(ctx);
     right.push({
         text: `↑${fmt(usage.input)} ↓${fmt(usage.output)}`,
-        bg: "userMessageBg",
-        fg: "text",
+        bg: "muted",
     });
 
     // Cost (only once nonzero, to avoid a $0.000 segment at startup)
     if (usage.cost > 0) {
-        right.push({ text: `$${usage.cost.toFixed(3)}`, bg: "selectedBg", fg: "warning" });
+        right.push({ text: `$${usage.cost.toFixed(3)}`, bg: "error" });
     }
 
     // Extension statuses (set via ctx.ui.setStatus by other extensions)
@@ -173,8 +249,7 @@ function buildSegments(
     if (statuses.size > 0) {
         right.push({
             text: [...statuses.values()].join(" │ "),
-            bg: "toolErrorBg",
-            fg: "text",
+            bg: "borderAccent",
         });
     }
 
@@ -195,7 +270,8 @@ function buildFooterLine(
 
     let ls = leftSegs;
     let rs = rightSegs;
-    const fits = () => visibleWidth(renderLeft(theme, ls)) + visibleWidth(renderRight(theme, rs)) + 1 <= width;
+    const fits = () =>
+        visibleWidth(renderLeft(theme, ls)) + visibleWidth(renderRight(theme, rs)) + 1 <= width;
 
     while (rs.length > 0 && !fits()) rs = rs.slice(0, -1);
     while (ls.length > 1 && !fits()) ls = ls.slice(0, -1);
