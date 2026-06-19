@@ -3,7 +3,7 @@
  */
 
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
-import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { matchesKey } from "@earendil-works/pi-tui";
 
 import type { Mode, PendingOp, LastFind } from "./types";
 import { ESC } from "./types";
@@ -24,15 +24,29 @@ import {
 export class ViEditor extends CustomEditor {
     private viTheme: any;
     private fullTheme: any;
+    private setStatus: (text: string | undefined) => void;
 
-    constructor(tui: any, theme: any, kb: any, fullTheme: any) {
+    constructor(tui: any, theme: any, kb: any, fullTheme: any, setStatus: (text: string | undefined) => void) {
         super(tui, theme, kb);
         this.viTheme = theme;
         this.fullTheme = fullTheme;
+        this.setStatus = setStatus;
+        this.mode = "insert";
     }
 
-    private mode: Mode = "insert";
-    private pendingOp: PendingOp | null = null;
+    private _mode: Mode = "insert";
+    private get mode(): Mode { return this._mode; }
+    private set mode(value: Mode) {
+        this._mode = value;
+        this.updateModeStatus();
+    }
+
+    private _pendingOp: PendingOp | null = null;
+    private get pendingOp(): PendingOp | null { return this._pendingOp; }
+    private set pendingOp(value: PendingOp | null) {
+        this._pendingOp = value;
+        this.updateModeStatus();
+    }
     /** For two-key sequences (gg, yy) and operators awaiting motion. */
     private pendingKey: string | null = null;
     /** Text object prefix (a/i) for daw, ciw, etc. */
@@ -780,33 +794,27 @@ export class ViEditor extends CustomEditor {
         this.mode = oldMode;
     }
 
+    // ── Footer status ────────────────────────────────────────────────────
+
+    private updateModeStatus(): void {
+        let label: string;
+        if (this.mode === "command") {
+            label = "COMMAND";
+        } else if (this.mode === "insert") {
+            label = "INSERT";
+        } else if (this.pendingOp) {
+            label = this.pendingOp.op === "delete" ? "d" : "c";
+        } else {
+            label = "NORMAL";
+        }
+        this.setStatus(this.fullTheme?.fg("dim", label) ?? label);
+    }
+
     // ── Rendering ────────────────────────────────────────────────────────
 
     render(width: number): string[] {
         const lines = super.render(width);
         if (lines.length === 0) return lines;
-
-        // Add mode indicator to top border
-        let rawLabel: string;
-        if (this.mode === "command") {
-            rawLabel = " COMMAND ";
-        } else if (this.mode === "insert") {
-            rawLabel = " INSERT ";
-        } else if (this.pendingOp) {
-            rawLabel = this.pendingOp.op === "delete" ? " d " : " c ";
-        } else {
-            rawLabel = " NORMAL ";
-        }
-
-        // Use the footer's text color (`dim`) for the mode label — it stays
-        // readable across themes, unlike borderMuted which is near-invisible on
-        // dark surfaces (e.g. tokyonight-storm).
-        const label = this.fullTheme?.fg("dim", rawLabel) ?? this.viTheme.borderColor(rawLabel);
-
-        // Insert label into the top border line and truncate if needed
-        if (lines[0] !== undefined && visibleWidth(lines[0]) >= visibleWidth(label)) {
-            lines[0] = truncateToWidth(label + lines[0]!, width, "");
-        }
 
         // In command mode, swap "/" → ":" in rendered editor lines for vi-style display
         if (this.mode === "command") {
