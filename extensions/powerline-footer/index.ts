@@ -1,8 +1,9 @@
 /**
  * Powerline Footer Extension - replaces the default pi footer with a
- * powerline-style statusline: colored segments joined by triangle separators
- * (, ), with extension statuses / git branch / cwd on the left and
- * token usage / cost / model on the right.
+ * two-row statusline:
+ *   Row 1 — powerline bar ( /  triangles) with git branch, cwd, token
+ *            usage, cost, and model.
+ *   Row 2 — extension statuses (vi-mode, nvim-pipe, etc.) left-aligned.
  *
  * Requires a powerline-patched font for the triangle (U+E0B0/U+E0B2) and
  * branch (U+E0A0) glyphs.
@@ -71,7 +72,6 @@ const ANSI_256_BLACK = "\x1b[38;5;0m";
 
 function index256ToRgb(index: number): { r: number; g: number; b: number } {
     if (index < 16) {
-        // Standard / high-intensity colors (approximate common terminal values)
         const table = [
             [0, 0, 0],
             [205, 49, 49],
@@ -151,7 +151,6 @@ function renderLeft(theme: Theme, segs: Segment[]): string {
         if (i < segs.length - 1) {
             out += `${bgAnsi(theme, segs[i + 1].bg)}${fgAnsi(theme, segs[i].bg)}${RIGHT_TRIANGLE}`;
         } else {
-            // Trailing triangle fades into the terminal's default background.
             out += `${DEFAULT_BG}${fgAnsi(theme, segs[i].bg)}${RIGHT_TRIANGLE}`;
         }
     }
@@ -166,7 +165,6 @@ function renderLeft(theme: Theme, segs: Segment[]): string {
  */
 function renderRight(theme: Theme, segs: Segment[]): string {
     if (segs.length === 0) return "";
-    // Enter from the default background: triangle is the first segment color.
     let out = `${fgAnsi(theme, segs[0].bg)}${DEFAULT_BG}${LEFT_TRIANGLE}`;
     for (let i = 0; i < segs.length; i++) {
         out += segmentCell(theme, segs[i]);
@@ -175,6 +173,30 @@ function renderRight(theme: Theme, segs: Segment[]): string {
         }
     }
     return `${out}${RESET}`;
+}
+
+// ── Status row ────────────────────────────────────────────────────────────────
+
+/** Build the bottom status row with extension statuses. */
+function buildStatusRow(
+    theme: Theme,
+    footerData: ReadonlyFooterDataProvider,
+    width: number,
+): string | null {
+    const statuses = footerData.getExtensionStatuses();
+    if (statuses.size === 0) return null;
+
+    // Sort by key so consumers can force ordering with prefixes (e.g.
+    // "!vi-mode" sorts first and appears leftmost).
+    const sorted = [...statuses.entries()].sort(([a], [b]) =>
+        a.localeCompare(b),
+    );
+    const text = sorted.map(([, v]) => v).join("  ");
+    return truncateToWidth(
+        `${RESET}${theme.getFgAnsi("dim")}${text}${RESET}`,
+        width,
+        "",
+    );
 }
 
 // ── Data helpers ──────────────────────────────────────────────────────────────
@@ -220,21 +242,6 @@ function buildSegments(
     const left: Segment[] = [];
     const right: Segment[] = [];
 
-    // Extension statuses (set via ctx.ui.setStatus by other extensions).
-    // Placed first so keys like "!vi-mode" appear leftmost.
-    const statuses = footerData.getExtensionStatuses();
-    if (statuses.size > 0) {
-        // Sort by key so consumers can force ordering with prefixes (e.g.
-        // "!vi-mode" sorts first and appears leftmost).
-        const sorted = [...statuses.entries()].sort(([a], [b]) =>
-            a.localeCompare(b)
-        );
-        left.push({
-            text: sorted.map(([, text]) => text).join(" │ "),
-            bg: "borderAccent",
-        });
-    }
-
     // Git branch
     const branch = footerData.getGitBranch();
     if (branch) {
@@ -263,15 +270,17 @@ function buildSegments(
 }
 
 /**
- * Build the full footer line: [left bar] [padding] [right bar].
+ * Build the two-row footer:
+ *   Row 1 — powerline bar
+ *   Row 2 — extension statuses (only when present)
  * Drops right-side then left-side segments when the terminal is too narrow.
  */
-function buildFooterLine(
+function buildFooterLines(
     theme: Theme,
     ctx: ExtensionContext,
     footerData: ReadonlyFooterDataProvider,
     width: number,
-): string {
+): string[] {
     const { left: leftSegs, right: rightSegs } = buildSegments(ctx, footerData);
 
     let ls = leftSegs;
@@ -285,7 +294,10 @@ function buildFooterLine(
     const left = renderLeft(theme, ls);
     const right = renderRight(theme, rs);
     const pad = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
-    return truncateToWidth(left + " ".repeat(pad) + right, width, "");
+    const powerline = truncateToWidth(left + " ".repeat(pad) + right, width, "");
+
+    const statusRow = buildStatusRow(theme, footerData, width);
+    return statusRow ? [powerline, statusRow] : [powerline];
 }
 
 // ── Extension wiring ──────────────────────────────────────────────────────────
@@ -308,7 +320,7 @@ export default function (pi: ExtensionAPI) {
                 invalidate() {},
                 render(width: number): string[] {
                     // Read the live theme so the bar adapts to theme switches.
-                    return [buildFooterLine(ctx.ui.theme, ctx, footerData, width)];
+                    return buildFooterLines(ctx.ui.theme, ctx, footerData, width);
                 },
             };
         });
