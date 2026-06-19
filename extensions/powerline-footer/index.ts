@@ -1,8 +1,8 @@
 /**
  * Powerline Footer Extension - replaces the default pi footer with a
  * powerline-style statusline: colored segments joined by triangle separators
- * (, ), with git branch / cwd / extension statuses on the left and token
- * usage / cost / model on the right.
+ * (, ), with extension statuses / git branch / cwd on the left and
+ * token usage / cost / model on the right.
  *
  * Requires a powerline-patched font for the triangle (U+E0B0/U+E0B2) and
  * branch (U+E0A0) glyphs.
@@ -220,16 +220,8 @@ function buildSegments(
     const left: Segment[] = [];
     const right: Segment[] = [];
 
-    // Git branch
-    const branch = footerData.getGitBranch();
-    if (branch) {
-        left.push({ text: `${BRANCH_GLYPH} ${branch}`, bg: "success" });
-    }
-
-    // Working directory
-    left.push({ text: shortenPath(ctx.cwd), bg: "warning" });
-
-    // Extension statuses (set via ctx.ui.setStatus by other extensions)
+    // Extension statuses (set via ctx.ui.setStatus by other extensions).
+    // Placed first so keys like "!vi-mode" appear leftmost.
     const statuses = footerData.getExtensionStatuses();
     if (statuses.size > 0) {
         // Sort by key so consumers can force ordering with prefixes (e.g.
@@ -242,6 +234,15 @@ function buildSegments(
             bg: "borderAccent",
         });
     }
+
+    // Git branch
+    const branch = footerData.getGitBranch();
+    if (branch) {
+        left.push({ text: `${BRANCH_GLYPH} ${branch}`, bg: "success" });
+    }
+
+    // Working directory
+    left.push({ text: shortenPath(ctx.cwd), bg: "warning" });
 
     // Token usage
     const usage = sumUsage(ctx);
