@@ -232,8 +232,13 @@ function buildSegments(
     // Extension statuses (set via ctx.ui.setStatus by other extensions)
     const statuses = footerData.getExtensionStatuses();
     if (statuses.size > 0) {
+        // Sort by key so consumers can force ordering with prefixes (e.g.
+        // "!vi-mode" sorts first and appears leftmost).
+        const sorted = [...statuses.entries()].sort(([a], [b]) =>
+            a.localeCompare(b)
+        );
         left.push({
-            text: [...statuses.values()].join(" │ "),
+            text: sorted.map(([, text]) => text).join(" │ "),
             bg: "borderAccent",
         });
     }
