@@ -1,8 +1,9 @@
 /**
  * Powerline Footer Extension - replaces the default pi footer with a
- * powerline-style statusline: colored segments joined by triangle separators
- * (, ), with extension statuses / git branch / cwd on the left and
- * token usage / cost / model on the right.
+ * two-row statusline:
+ *   Row 1 — extension statuses (vi-mode, nvim-pipe, etc.), left-aligned.
+ *   Row 2 — powerline bar (triangle separators) with git branch, cwd,
+ *           token usage, cost, and model.
  *
  * Requires a powerline-patched font for the triangle (U+E0B0/U+E0B2) and
  * branch (U+E0A0) glyphs.
@@ -174,6 +175,30 @@ function renderRight(theme: Theme, segs: Segment[]): string {
     return `${out}${RESET}`;
 }
 
+// ── Status row ────────────────────────────────────────────────────────────────
+
+/** Build the top row with extension statuses, left-aligned in dim style. */
+function buildStatusRow(
+    theme: Theme,
+    footerData: ReadonlyFooterDataProvider,
+    width: number,
+): string | null {
+    const statuses = footerData.getExtensionStatuses();
+    if (statuses.size === 0) return null;
+
+    // Sort by key so consumers can force ordering with prefixes (e.g.
+    // "!vi-mode" sorts first and appears leftmost).
+    const sorted = [...statuses.entries()].sort(([a], [b]) =>
+        a.localeCompare(b),
+    );
+    const text = sorted.map(([, v]) => v).join("  ");
+    return truncateToWidth(
+        `${RESET}${theme.getFgAnsi("dim")}${text}${RESET}`,
+        width,
+        "",
+    );
+}
+
 // ── Data helpers ──────────────────────────────────────────────────────────────
 
 function fmt(n: number): string {
@@ -210,25 +235,12 @@ function sumUsage(ctx: ExtensionContext): { input: number; output: number; cost:
     return { input, output, cost };
 }
 
-function buildSegments(
+function buildPowerlineRow(
     ctx: ExtensionContext,
     footerData: ReadonlyFooterDataProvider,
 ): { left: Segment[]; right: Segment[] } {
     const left: Segment[] = [];
     const right: Segment[] = [];
-
-    // Extension statuses — leftmost segment, bottom-left on the bar.
-    // Sorted by key so "!vi-mode" appears first.
-    const statuses = footerData.getExtensionStatuses();
-    if (statuses.size > 0) {
-        const sorted = [...statuses.entries()].sort(([a], [b]) =>
-            a.localeCompare(b),
-        );
-        left.push({
-            text: sorted.map(([, text]) => text).join(" │ "),
-            bg: "borderAccent",
-        });
-    }
 
     // Git branch
     const branch = footerData.getGitBranch();
@@ -257,18 +269,12 @@ function buildSegments(
     return { left, right };
 }
 
-/**
- * Build the footer line: [left bar] [padding] [right bar].
- * Drops right-side then left-side segments when the terminal is too narrow.
- */
-function buildFooterLine(
+function renderPowerlineRow(
     theme: Theme,
-    ctx: ExtensionContext,
-    footerData: ReadonlyFooterDataProvider,
+    leftSegs: Segment[],
+    rightSegs: Segment[],
     width: number,
 ): string {
-    const { left: leftSegs, right: rightSegs } = buildSegments(ctx, footerData);
-
     let ls = leftSegs;
     let rs = rightSegs;
     const fits = () =>
@@ -281,6 +287,27 @@ function buildFooterLine(
     const right = renderRight(theme, rs);
     const pad = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
     return truncateToWidth(left + " ".repeat(pad) + right, width, "");
+}
+
+/**
+ * Build the two-row footer:
+ *   Row 1 — extension statuses (left-aligned dim text)
+ *   Row 2 — powerline bar with branch, cwd, usage, cost, model
+ */
+function buildFooterLines(
+    theme: Theme,
+    ctx: ExtensionContext,
+    footerData: ReadonlyFooterDataProvider,
+    width: number,
+): string[] {
+    const { left, right } = buildPowerlineRow(ctx, footerData);
+    const powerlineBar = renderPowerlineRow(theme, left, right, width);
+    const statusRow = buildStatusRow(theme, footerData, width);
+
+    const lines: string[] = [];
+    if (statusRow) lines.push(statusRow);
+    lines.push(powerlineBar);
+    return lines;
 }
 
 // ── Extension wiring ──────────────────────────────────────────────────────────
@@ -302,7 +329,7 @@ export default function (pi: ExtensionAPI) {
                 },
                 invalidate() {},
                 render(width: number): string[] {
-                    return [buildFooterLine(ctx.ui.theme, ctx, footerData, width)];
+                    return buildFooterLines(ctx.ui.theme, ctx, footerData, width);
                 },
             };
         });
