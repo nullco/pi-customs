@@ -819,9 +819,9 @@ export class ViEditor extends CustomEditor {
             }
         }
 
-        // Mode line below the input/editor, left-aligned, right above the footer
+        // Mode line above the editor, left-aligned
         const label = this.formatModeLabel();
-        lines.push(truncateToWidth(label, width, ""));
+        lines.unshift(truncateToWidth(label, width, ""));
 
         return lines;
     }
