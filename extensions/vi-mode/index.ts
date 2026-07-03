@@ -73,8 +73,7 @@ export default function (pi: ExtensionAPI) {
         // Capture the full live Theme (reflects theme switches / hot-reload) so the
         // editor can use colors beyond the EditorTheme's borderColor (e.g. `dim`).
         const fullTheme = ctx.ui.theme;
-        const setStatus = (text: string | undefined) => ctx.ui.setStatus("vi-mode", text);
-        ctx.ui.setEditorComponent((tui, theme, kb) => new ViEditor(tui, theme, kb, fullTheme, setStatus));
+        ctx.ui.setEditorComponent((tui, theme, kb) => new ViEditor(tui, theme, kb, fullTheme));
     });
 
     pi.on("session_shutdown", (_event, ctx) => {

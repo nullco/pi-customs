@@ -3,7 +3,7 @@
  */
 
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
-import { matchesKey } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
 import type { Mode, PendingOp, LastFind } from "./types";
 import { ESC } from "./types";
@@ -24,13 +24,10 @@ import {
 export class ViEditor extends CustomEditor {
     private viTheme: any;
     private fullTheme: any;
-    private setStatus: (text: string | undefined) => void;
-
-    constructor(tui: any, theme: any, kb: any, fullTheme: any, setStatus: (text: string | undefined) => void) {
+    constructor(tui: any, theme: any, kb: any, fullTheme: any) {
         super(tui, theme, kb);
         this.viTheme = theme;
         this.fullTheme = fullTheme;
-        this.setStatus = setStatus;
         this.mode = "insert";
     }
 
@@ -38,14 +35,14 @@ export class ViEditor extends CustomEditor {
     private get mode(): Mode { return this._mode; }
     private set mode(value: Mode) {
         this._mode = value;
-        this.updateModeStatus();
+        this.tui?.requestRender();
     }
 
     private _pendingOp: PendingOp | null = null;
     private get pendingOp(): PendingOp | null { return this._pendingOp; }
     private set pendingOp(value: PendingOp | null) {
         this._pendingOp = value;
-        this.updateModeStatus();
+        this.tui?.requestRender();
     }
     /** For two-key sequences (gg, yy) and operators awaiting motion. */
     private pendingKey: string | null = null;
@@ -794,9 +791,7 @@ export class ViEditor extends CustomEditor {
         this.mode = oldMode;
     }
 
-    // ── Footer status ────────────────────────────────────────────────────
-
-    private updateModeStatus(): void {
+    private formatModeLabel(): string {
         let label: string;
         if (this.mode === "command") {
             label = "COMMAND";
@@ -807,7 +802,8 @@ export class ViEditor extends CustomEditor {
         } else {
             label = "NORMAL";
         }
-        this.setStatus(this.fullTheme?.fg("dim", label) ?? label);
+        const raw = `[${label}]`;
+        return this.fullTheme?.fg("dim", raw) ?? raw;
     }
 
     // ── Rendering ────────────────────────────────────────────────────────
@@ -822,6 +818,10 @@ export class ViEditor extends CustomEditor {
                 lines[i] = lines[i]!.replace(/^((?:\x1b\[[0-9;]*m)*)\//, "$1:");
             }
         }
+
+        // Mode line below the input/editor, left-aligned, right above the footer
+        const label = this.formatModeLabel();
+        lines.push(truncateToWidth(label, width, ""));
 
         return lines;
     }
