@@ -802,7 +802,7 @@ export class ViEditor extends CustomEditor {
         } else {
             label = "NORMAL";
         }
-        const raw = `[${label}]`;
+        const raw = label;
         return this.fullTheme?.fg("dim", raw) ?? raw;
     }
 
