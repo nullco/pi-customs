@@ -17,8 +17,8 @@
  *
  *   {
  *     "left": [       // segments from left to right
- *       { "kind": "git-branch", "bg": "success" },
- *       { "kind": "cwd",        "bg": "warning" },
+ *       { "kind": "git-branch", "bg": "muted" },
+ *       { "kind": "cwd",        "bg": "accent" },
  *       { "kind": "extension-status", "key": "vi-mode", "bg": "muted" },
  *       { "kind": "extension-status", "bg": "borderAccent" }
  *     ],
@@ -98,8 +98,8 @@ interface Segment {
 const DEFAULT_CONFIG: Config = {
     left: [
         { kind: "extension-status", key: "vi-mode", bg: "muted" },
-        { kind: "git-branch", bg: "success" },
-        { kind: "cwd", bg: "warning" },
+        { kind: "git-branch", bg: "muted" },
+        { kind: "cwd", bg: "accent" },
         { kind: "extension-status", bg: "borderAccent" },
     ],
     right: [
@@ -311,8 +311,8 @@ function sumUsage(ctx: ExtensionContext): { input: number; output: number; cost:
 
 function createSlotDefaultBg(kind: SlotKind): SegmentBg {
     switch (kind) {
-        case "git-branch":       return "success";
-        case "cwd":              return "warning";
+        case "git-branch":       return "muted";
+        case "cwd":              return "accent";
         case "extension-status": return "borderAccent";
         case "usage":            return "muted";
         case "cost":             return "error";
