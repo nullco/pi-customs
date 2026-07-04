@@ -19,7 +19,6 @@
  *     "left": [       // segments from left to right
  *       { "kind": "git-branch", "bg": "muted" },
  *       { "kind": "cwd",        "bg": "accent" },
- *       { "kind": "extension-status", "key": "vi-mode", "bg": "muted" },
  *       { "kind": "extension-status", "bg": "borderAccent" }
  *     ],
  *     "right": [      // segments from right to left
@@ -97,7 +96,6 @@ interface Segment {
 
 const DEFAULT_CONFIG: Config = {
     left: [
-        { kind: "extension-status", key: "vi-mode", bg: "muted" },
         { kind: "git-branch", bg: "muted" },
         { kind: "cwd", bg: "accent" },
         { kind: "extension-status", bg: "borderAccent" },
