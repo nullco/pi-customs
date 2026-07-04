@@ -403,20 +403,49 @@ function renderBar(
     leftSegs: Segment[],
     rightSegs: Segment[],
     width: number,
-): string {
-    let ls = leftSegs;
-    let rs = rightSegs;
-    const fits = () =>
-        visibleWidth(renderLeft(theme, ls)) + visibleWidth(renderRight(theme, rs)) + 1 <= width;
+): string[] {
+    const lines: string[] = [];
 
-    // Drop right segments first (least important), then left (keep at least one)
-    while (rs.length > 0 && !fits()) rs = rs.slice(0, -1);
-    while (ls.length > 1 && !fits()) ls = ls.slice(0, -1);
+    // Find the longest prefix of right segments that still fits on the
+    // first line alongside the left block. Inner right segments (index 0)
+    // stay on line 1; outer ones wrap to additional left-aligned lines.
+    let fitRight: Segment[] = [];
+    for (let i = rightSegs.length; i >= 0; i--) {
+        const candidate = rightSegs.slice(0, i);
+        const left = renderLeft(theme, leftSegs);
+        const right = renderRight(theme, candidate);
+        if (visibleWidth(left) + visibleWidth(right) + 1 <= width) {
+            fitRight = candidate;
+            break;
+        }
+    }
 
-    const left  = renderLeft(theme, ls);
-    const right = renderRight(theme, rs);
+    const left = renderLeft(theme, leftSegs);
+    const right = renderRight(theme, fitRight);
     const pad = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
-    return truncateToWidth(left + " ".repeat(pad) + right, width, "");
+    lines.push(truncateToWidth(left + " ".repeat(pad) + right, width, ""));
+
+    // Wrap remaining right segments onto additional left-aligned lines.
+    let overflow = rightSegs.slice(fitRight.length);
+    while (overflow.length > 0) {
+        let fit: Segment[] = [];
+        for (let i = overflow.length; i >= 0; i--) {
+            const candidate = overflow.slice(0, i);
+            const rendered = renderLeft(theme, candidate);
+            if (visibleWidth(rendered) <= width) {
+                fit = candidate;
+                break;
+            }
+        }
+        if (fit.length === 0) {
+            // Even a single segment is too wide; truncate it in place.
+            fit = [overflow[0]];
+        }
+        lines.push(truncateToWidth(renderLeft(theme, fit), width, ""));
+        overflow = overflow.slice(fit.length);
+    }
+
+    return lines;
 }
 
 // ── Extension wiring ──────────────────────────────────────────────────────────
@@ -446,7 +475,7 @@ export default function (pi: ExtensionAPI) {
                     const theme = ctx.ui.theme;
                     const left  = buildSegments(config.left, ctx, footerData);
                     const right = buildSegments(config.right, ctx, footerData);
-                    return [renderBar(theme, left, right, width)];
+                    return renderBar(theme, left, right, width);
                 },
             };
         });
