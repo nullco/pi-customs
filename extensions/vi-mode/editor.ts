@@ -3,7 +3,7 @@
  */
 
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
-import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { matchesKey } from "@earendil-works/pi-tui";
 
 import type { Mode, PendingOp, LastFind } from "./types";
 import { ESC } from "./types";
@@ -22,12 +22,8 @@ import {
 } from "./motions";
 
 export class ViEditor extends CustomEditor {
-    private viTheme: any;
-    private fullTheme: any;
-    constructor(tui: any, theme: any, kb: any, fullTheme: any) {
+    constructor(tui: any, theme: any, kb: any) {
         super(tui, theme, kb);
-        this.viTheme = theme;
-        this.fullTheme = fullTheme;
         this.mode = "insert";
     }
 
@@ -791,21 +787,6 @@ export class ViEditor extends CustomEditor {
         this.mode = oldMode;
     }
 
-    private formatModeLabel(): string {
-        let label: string;
-        if (this.mode === "command") {
-            label = "COMMAND";
-        } else if (this.mode === "insert") {
-            label = "INSERT";
-        } else if (this.pendingOp) {
-            label = this.pendingOp.op === "delete" ? "d" : "c";
-        } else {
-            label = "NORMAL";
-        }
-        const raw = label;
-        return this.fullTheme?.fg("dim", raw) ?? raw;
-    }
-
     // ── Rendering ────────────────────────────────────────────────────────
 
     render(width: number): string[] {
@@ -819,10 +800,32 @@ export class ViEditor extends CustomEditor {
             }
         }
 
-        // Mode line above the editor, left-aligned
-        const label = this.formatModeLabel();
-        lines.unshift(truncateToWidth(label, width, ""));
+        // Pi hides the hardware cursor by default and draws a simulated block.
+        // For insert mode we want a real vertical bar, so turn the hardware
+        // cursor on while this editor is focused in insert mode, and set the
+        // terminal cursor shape directly (avoiding the line-width calculations
+        // that would mis-count an in-line escape sequence).
+        const insertCursor = this.focused && this.mode === "insert";
+        this.tui?.setShowHardwareCursor?.(insertCursor);
+        this.tui?.terminal?.write(insertCursor ? "\x1b[6 q" : "\x1b[2 q");
 
-        return lines;
+        return this.styleCursor(lines);
+    }
+
+    /**
+     * In insert mode remove the editor's simulated inverse-video block so the
+     * hardware cursor (which is set to a vertical bar in render()) is the only
+     * cursor visible. Normal/command mode leave the simulated block as-is.
+     */
+    private styleCursor(lines: string[]): string[] {
+        if (this.mode !== "insert") return lines;
+
+        const marker = "\x1b_pi:c\x07";
+        return lines.map((line) => {
+            if (!line.includes(marker) || !line.includes("\x1b[7m")) return line;
+            // Strip the simulated inverse-video block but keep the reset
+            // so later cells don't inherit pre-cursor attributes.
+            return line.replace(/\x1b\[7m(.*?)\x1b\[0m/, "$1\x1b[0m");
+        });
     }
 }
