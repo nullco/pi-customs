@@ -34,7 +34,7 @@ const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
-const SUBAGENT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const SUBAGENT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -454,7 +454,7 @@ async function runSingleAgent(
 				resolve(code);
 			};
 			const timeoutHandle = setTimeout(() => {
-				currentResult.stderr += "\n[Subagent timed out after 5 minutes]";
+				currentResult.stderr += "\n[Subagent timed out after 30 minutes]";
 				resolveOnce(1);
 			}, SUBAGENT_TIMEOUT_MS);
 			let buffer = "";
