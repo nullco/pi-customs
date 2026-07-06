@@ -2,9 +2,7 @@
 description: 'Review staged changes and commit with a Conventional Commits message'
 ---
 
-# /commit
-
-You are being invoked via `/commit`.
+# Commit
 
 1. Review the current git state with `git status` and `git diff --cached`.
    If nothing is staged, stage all changes with `git add -A` first, then use
