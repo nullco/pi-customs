@@ -3,9 +3,9 @@ description: 'Review current branch changes against a base branch and categorize
 argument-hint: '[base-branch] [focus-area]'
 ---
 
-# /review
+# Review
 
-You are invoked via `/review`. Review only the changes introduced by the **current branch** compared to the base branch `${1:-master}`.
+Review only the changes introduced by the **current branch** compared to the base branch `${1:-master}`.
 
 Use `git diff <base>...HEAD` so that the review covers commits added since the current branch diverged, not unrelated changes that landed on the base branch in the meantime.
 
