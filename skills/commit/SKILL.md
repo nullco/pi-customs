@@ -1,4 +1,5 @@
 ---
+name: commit
 description: 'Review staged changes and commit with a Conventional Commits message'
 ---
 

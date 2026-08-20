@@ -1,4 +1,5 @@
 ---
+name: review
 description: 'Review current branch changes against a base branch and categorize issues by severity'
 argument-hint: '[base-branch] [focus-area]'
 ---
