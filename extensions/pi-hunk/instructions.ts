@@ -1,0 +1,1 @@
+export const HUNK_INSTRUCTIONS = `Address the Hunk comment below. When done, use bash to run the supplied reply command, replacing REPLY with your concise, shell-quoted answer. Keep the comment and reply out of chat. Finish without a chat response; the extension reports delivery or failure. Use one literal command, without shell substitutions or chaining.`;

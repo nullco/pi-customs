@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createHunkClient, parseNotes, parseSessions } from "./hunk.ts";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { replyCommand } from "./cli.ts";
 
 test("parses the documented Hunk JSON shapes and rejects malformed responses", () => {
     assert.deepEqual(parseSessions({ sessions: [{ sessionId: "s", repoRoot: "/repo", title: "review", snapshot: {} }] }),
@@ -16,7 +19,7 @@ test("parses the documented Hunk JSON shapes and rejects malformed responses", (
     }]) assert.throws(() => parseNotes(value));
 });
 
-test("CLI operations use exact session IDs and literal arguments, without shell interpolation", async (t) => {
+test("direct bash CLI uses exact IDs and shell-quoted literal reply text",  async (t) => {
     const dir = await mkdtemp(join(tmpdir(), "pi-hunk-cli-"));
     const oldPath = process.env.PATH;
     t.after(async () => {
@@ -32,7 +35,7 @@ test("CLI operations use exact session IDs and literal arguments, without shell 
     await client.sessions(signal);
     await client.notes("session:exact", signal);
     const summary = "Don't interpolate $(touch injected); `echo oops`\nSecond line";
-    await client.reply("session:exact", "user:1", summary, signal);
+    await promisify(execFile)("bash", ["-c", replyCommand("00000000-0000-4000-8000-000000000001", "session:exact", "user:1", summary)], { cwd: dir, signal });
     const calls = (await readFile(join(dir, "calls.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(calls, [
         ["session", "list", "--json"],

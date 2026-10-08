@@ -23,6 +23,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, initial: Not
     const sent: string[] = [];
     const saved: NoteState[] = [];
     const notifications: string[] = [];
+    const received: number[] = [];
     const replies: { sessionId: string; noteId: string; summary: string }[] = [];
     const client: HunkClient = {
         sessions: async () => sessions,
@@ -31,23 +32,23 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, initial: Not
             if (failRead) throw new Error("read failed");
             return notes;
         },
-        reply: async (sessionId, noteId, summary) => {
-            replies.push({ sessionId, noteId, summary });
-            notes.push({ ...human(`agent:${replies.length}`, summary), source: "agent", parentId: noteId, author: "pi-hunk", createdAt: "2026-10-08T11:00:00Z" });
-            if (failReply) throw new Error("lost acknowledgement");
-        },
+    };
+    const post = async (sessionId: string, noteId: string, summary: string) => {
+        replies.push({ sessionId, noteId, summary });
+        notes.push({ ...human(`agent:${replies.length}`, summary), source: "agent", parentId: noteId, author: "pi-hunk", createdAt: "2026-10-08T11:00:00Z" });
+        if (failReply) throw new Error("lost acknowledgement");
     };
     const ports: WatcherPorts = {
         idle: () => idle,
         send: (prompt) => sent.push(prompt),
         save: (state) => saved.push(state),
-        status: () => {},
         notify: (text) => notifications.push(text),
+        received: (count) => received.push(count),
     };
     const watcher = new HunkWatcher(repo, client, ports, initial.map((state) => ({ ...state, repo })), pinned);
     t.after(async () => watcher.stop());
     return {
-        repo, watcher, client, ports, sent, saved, notifications, replies,
+        repo, watcher, client, post, ports, sent, saved, notifications, received, replies,
         get notes() { return notes; }, set notes(value: HunkNote[]) { notes = value; },
         get sessions() { return sessions; }, set sessions(value: HunkSession[]) { sessions = value; },
         set idle(value: boolean) { idle = value; },
@@ -57,8 +58,12 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, initial: Not
     };
 }
 
-function reply(f: Awaited<ReturnType<typeof fixture>>, note = f.notes[0], summary = "Simplified; tests passed") {
-    return f.watcher.reply("session:1", note.noteId, noteVersion(note), summary);
+async function reply(f: Awaited<ReturnType<typeof fixture>>, note = f.notes[0], summary = "Simplified; tests passed") {
+    const version = noteVersion(note);
+    if (await f.watcher.prepareReply("session:1", note.noteId, version, summary)) {
+        await f.post("session:1", note.noteId, summary); // Simulate the main agent's direct CLI call.
+        assert(await f.watcher.confirmReply("session:1", note.noteId, version, summary));
+    }
 }
 
 test("human notes dispatch once and require a confirmed reply", async (t) => {
@@ -66,19 +71,19 @@ test("human notes dispatch once and require a confirmed reply", async (t) => {
     await f.watcher.poll();
     assert.equal(f.sent.length, 1);
     assert.equal(f.saved[0].phase, "submitted");
-    assert.match(f.sent[0], /pi_hunk_reply/);
+    assert.match(f.sent[0], /"request": "Please simplify this"/);
     await f.watcher.poll();
     assert.equal(f.sent.length, 1);
     await reply(f);
     assert.equal(f.saved.at(-1)?.phase, "handled");
-    await reply(f); // Duplicate tool call is idempotent.
+    await reply(f); // Repeated automatic posting is idempotent.
     assert.equal(f.replies.length, 1);
     f.watcher.settled();
     await f.watcher.poll();
     assert.equal(f.sent.length, 1);
 });
 
-test("busy Pi queues notes but re-reads edits/deletions before dispatch", async (t) => {
+test("busy main Pi queues notes but re-reads edits/deletions before dispatch", async (t) => {
     const f = await fixture(t);
     f.idle = false;
     await f.watcher.poll();
@@ -91,7 +96,25 @@ test("busy Pi queues notes but re-reads edits/deletions before dispatch", async 
     assert.doesNotMatch(f.sent[0], /Please simplify this/);
 });
 
-test("comments added during a run wait until the next poll after settlement", async (t) => {
+test("receipt notices batch new comments and edits once, even while main Pi is busy", async (t) => {
+    const f = await fixture(t);
+    f.idle = false;
+    f.notes.push(human("user:2", "Second comment"));
+    await f.watcher.poll();
+    await f.watcher.poll();
+    assert.deepEqual(f.received, [2]);
+    assert.equal(f.sent.length, 0);
+    f.notes[0] = { ...f.notes[0], body: "Edited comment" };
+    await f.watcher.poll();
+    await f.watcher.poll();
+    assert.deepEqual(f.received, [2, 1]);
+    f.idle = true;
+    await f.watcher.poll();
+    assert.equal(f.sent.length, 1);
+    assert.deepEqual(f.received, [2, 1]);
+});
+
+test("comments added during a main Pi run wait until its settlement", async (t) => {
     const f = await fixture(t);
     await f.watcher.poll();
     f.notes.push(human("user:2", "Another request"));
@@ -113,6 +136,7 @@ test("ignore agent/AI notes and already-answered history, but handle human follo
     assert.equal(f.saved[0].phase, "handled");
     assert.equal(f.saved[1].noteId, "user:2");
     assert.equal(f.saved.length, 2);
+    assert.deepEqual(f.received, [1]); // No receipt spam for agent notes or answered history.
     assert.match(f.sent[0], /Earlier answer/);
 });
 
@@ -197,6 +221,35 @@ test("persisted handled versions deduplicate reloads; newer versions dispatch", 
     assert.equal(f.sent.length, 1);
 });
 
+test("reload reconciles replies missed by the old marker-only guard", async (t) => {
+    const note = human();
+    const state: NoteState = { repo: "replaced", sessionId: "session:1", noteId: note.noteId, version: noteVersion(note), phase: "submitted" };
+    const f = await fixture(t, [state]);
+    await f.post("session:1", note.noteId, "Already delivered");
+    await f.watcher.poll();
+    assert.equal(f.sent.length, 0);
+    assert.equal(f.saved.at(-1)?.phase, "handled");
+    assert.equal(f.saved.at(-1)?.summary, "Already delivered");
+    assert.doesNotMatch(f.watcher.status(), /awaiting retry/);
+});
+
+test("legacy reconciliation requires a newer direct pi-hunk reply and never infers an active run", async (t) => {
+    const state: NoteState = { repo: "replaced", sessionId: "session:1", noteId: "user:1", version: noteVersion(human()), phase: "submitted" };
+    for (const extra of [{ author: "other" }, { parentId: "other" }, { createdAt: "2026-10-07T11:00:00Z" }]) {
+        const f = await fixture(t, [state]);
+        await f.post("session:1", "user:1", "Answer");
+        Object.assign(f.notes.at(-1)!, extra);
+        await f.watcher.poll();
+        assert.match(f.watcher.status(), /awaiting retry/);
+        assert.equal(f.saved.length, 0);
+    }
+    const f = await fixture(t);
+    await f.watcher.poll();
+    await f.post("session:1", "user:1", "Unguarded response during a run");
+    await f.watcher.poll();
+    assert.equal(f.saved.at(-1)?.phase, "submitted");
+});
+
 test("unfinished attempts do not spin agent turns; explicit retry resubmits", async (t) => {
     const f = await fixture(t);
     await f.watcher.poll();
@@ -222,6 +275,38 @@ test("a lost reply acknowledgement is reconciled without duplicate posts", async
     f.watcher.settled();
     await f.watcher.poll();
     assert.equal(f.sent.length, 1);
+});
+
+test("preflight only records intent; confirmation requires the actual matching Hunk reply", async (t) => {
+    const f = await fixture(t);
+    const note = f.notes[0];
+    const version = noteVersion(note);
+    await f.watcher.poll();
+    assert(await f.watcher.prepareReply("session:1", note.noteId, version, "Answer"));
+    assert.equal(f.replies.length, 0); // The extension never performs the posting operation.
+    assert.equal(f.saved.at(-1)?.summary, "Answer");
+    assert.equal(await f.watcher.confirmReply("session:1", note.noteId, version, "Answer"), false);
+    f.notes.push({ ...human("agent:unrelated", "Answer"), source: "agent", parentId: "user:other" });
+    assert.equal(await f.watcher.confirmReply("session:1", note.noteId, version, "Answer"), false);
+    await f.post("session:1", note.noteId, "Answer");
+    assert(await f.watcher.confirmReply("session:1", note.noteId, version, "Answer"));
+    assert.equal(f.saved.at(-1)?.phase, "handled");
+});
+
+test("a version edited after preflight remains queued even if the old CLI reply was delivered", async (t) => {
+    const f = await fixture(t);
+    const original = f.notes[0];
+    const version = noteVersion(original);
+    await f.watcher.poll();
+    await f.watcher.prepareReply("session:1", original.noteId, version, "Old reply");
+    f.notes[0] = { ...original, body: "Newer comment" };
+    await f.post("session:1", original.noteId, "Old reply");
+    assert(await f.watcher.confirmReply("session:1", original.noteId, version, "Old reply"));
+    f.watcher.settled();
+    await f.watcher.poll();
+    assert.equal(f.sent.length, 2);
+    assert.match(f.sent[1], /Newer comment/);
+    assert.equal(f.saved.at(-1)?.version, noteVersion(f.notes[0]));
 });
 
 test("reply intent from a previous runtime reconciles after reload", async (t) => {
@@ -269,16 +354,21 @@ test("failed dispatch remains available for explicit retry", async (t) => {
     assert.equal(f.saved.at(-1)?.phase, "retry");
 });
 
-test("batching is bounded, blank notes ignored, and remaining comments drain", async (t) => {
+test("one comment per run preserves reply routing and ignores blank notes", async (t) => {
     const f = await fixture(t);
-    f.notes = Array.from({ length: 7 }, (_, i) => human(`user:${i}`));
-    f.notes.push(human("user:blank", "  "));
+    const notes = Array.from({ length: 7 }, (_, i) => human(`user:${i}`));
+    f.notes = [...notes, human("user:blank", "  ")];
+    for (let i = 0; i < notes.length; i++) {
+        await f.watcher.poll();
+        assert.equal(f.sent.length, i + 1);
+        const payload = JSON.parse(f.sent[i].slice(f.sent[i].indexOf("\n[") + 1));
+        assert.equal(payload.length, 1);
+        assert.equal(payload[0].noteId, notes[i].noteId);
+        await reply(f, notes[i]);
+        f.watcher.settled();
+    }
     await f.watcher.poll();
-    assert.equal(f.saved.length, 5);
-    for (const note of f.notes.slice(0, 5)) await reply(f, note);
-    f.watcher.settled();
-    await f.watcher.poll();
-    assert.equal(f.sent.length, 2);
+    assert.equal(f.sent.length, 7);
     assert.equal(f.saved.filter((state) => state.phase === "submitted" && !state.summary).length, 7);
 });
 

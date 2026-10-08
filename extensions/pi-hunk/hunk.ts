@@ -26,7 +26,6 @@ export interface HunkNote {
 export interface HunkClient {
     sessions(signal: AbortSignal): Promise<HunkSession[]>;
     notes(sessionId: string, signal: AbortSignal): Promise<HunkNote[]>;
-    reply(sessionId: string, noteId: string, summary: string, signal: AbortSignal): Promise<void>;
 }
 
 const exec = promisify(execFile);
@@ -93,10 +92,6 @@ export function createHunkClient(cwd: string): HunkClient {
     return {
         sessions: async (signal) => parseSessions(await command(["session", "list", "--json"], signal)),
         notes: async (id, signal) => parseNotes(await command(["session", "comment", "list", id, "--type", "all", "--json"], signal)),
-        reply: async (id, noteId, summary, signal) => {
-            // Argument arrays, never shell interpolation. Do not focus, reload, or remove notes.
-            await command(["session", "comment", "add", id, "--reply-to", noteId, "--summary", summary, "--author", "pi-hunk", "--json"], signal);
-        },
     };
 }
 

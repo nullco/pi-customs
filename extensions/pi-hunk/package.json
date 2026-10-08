@@ -8,9 +8,10 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
+    "@earendil-works/pi-tui": "*"
   },
   "scripts": {
-    "test": "node --test *.test.ts"
+    "test": "node --test *.test.ts",
+    "smoke": "node sdk-smoke.mjs"
   }
 }
