@@ -7,7 +7,8 @@ test("the injected prompt stays minimal and only explains reply routing", () => 
     assert.match(HUNK_INSTRUCTIONS, /use bash/);
     assert.match(HUNK_INSTRUCTIONS, /reply command/);
     assert.match(HUNK_INSTRUCTIONS, /out of chat/);
-    assert.match(HUNK_INSTRUCTIONS, /Finish without a chat response/);
+    assert.match(HUNK_INSTRUCTIONS, /including acknowledgments/);
+    assert.match(HUNK_INSTRUCTIONS, /Continue other pending work/);
     assert.match(HUNK_INSTRUCTIONS, /extension reports delivery or failure/);
     assert.match(HUNK_INSTRUCTIONS, /without shell substitutions or chaining/);
 });

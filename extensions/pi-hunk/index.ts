@@ -30,8 +30,9 @@ export default function piHunk(pi: ExtensionAPI) {
         })
         : next());
 
-    type Pending = { owner: HunkWatcher; task: Task; scope: HunkRequest; sentAt: number };
-    let pending: Pending | undefined;
+    type Pending = { owner: HunkWatcher; task: Task; scope: HunkRequest; sentAt: number; cancelled?: boolean; summary?: string; problem?: string };
+    const pending = new Map<string, Pending>();
+    const currentRequest = (request: Pending) => request.owner === watcher && pending.get(request.scope.requestId) === request;
     type ReplyCall = { request?: Pending; summary?: string; prepared?: boolean; confirmed?: boolean; reason?: string };
     const calls = new Map<string, ReplyCall>();
 
@@ -52,7 +53,7 @@ export default function piHunk(pi: ExtensionAPI) {
         timer = undefined;
         watcher?.stop();
         watcher = undefined;
-        pending = undefined;
+        pending.clear();
         // Do not abort the main agent: it may be handling ordinary Pi requests too.
     }
 
@@ -96,20 +97,19 @@ export default function piHunk(pi: ExtensionAPI) {
             }
             lastNotice = "";
             const active = new HunkWatcher(repo, client, {
-                idle: () => current() && ctx.isIdle() && !ctx.hasPendingMessages(),
                 send: (prompt, task) => {
                     if (!current()) throw new Error("Hunk watching stopped");
                     const requestId = randomUUID();
-                    pending = { owner: active, task, scope: new HunkRequest(requestId), sentAt: Date.now() };
+                    pending.set(requestId, { owner: active, task, scope: new HunkRequest(requestId), sentAt: Date.now() });
                     try {
                         // The CLI command's literal reply stays in ordinary bash tool-call history.
                         pi.sendMessage({
                             customType: REQUEST_TYPE,
                             content: `Reply command (replace REPLY only):\n${replyCommand(requestId, task.sessionId, task.note.noteId)}\n\n${prompt}`, display: false,
                             details: { requestId },
-                        }, { triggerTurn: true, deliverAs: "followUp" });
+                        }, { triggerTurn: true, deliverAs: "steer" });
                     } catch (error) {
-                        pending = undefined;
+                        pending.delete(requestId);
                         throw error;
                     }
                 },
@@ -124,11 +124,12 @@ export default function piHunk(pi: ExtensionAPI) {
 
             const tick = async () => {
                 if (!current() || watcher !== active) return;
-                if (pending?.owner === active && !pending.scope.started && Date.now() - pending.sentAt > 15000 &&
-                    ctx.isIdle() && !ctx.hasPendingMessages()) {
+                const unstarted = [...pending.values()].filter((request) => request.owner === active &&
+                    !request.scope.started && Date.now() - request.sentAt > 15000);
+                if (unstarted.length && ctx.isIdle() && !ctx.hasPendingMessages()) {
                     // sendMessage is fire-and-forget; recover if Pi rejected the run before any events.
-                    pending = undefined;
-                    active.settled();
+                    for (const request of unstarted) pending.delete(request.scope.requestId);
+                    active.settled(unstarted.map((request) => request.task));
                     lastNotice = "The Hunk request did not start in Pi. Inspect the outcome, then use /hunk retry.";
                     if (ctx.hasUI) ctx.ui.notify("Hunk reply was not sent. Check /hunk status.", "warning");
                 }
@@ -191,16 +192,29 @@ export default function piHunk(pi: ExtensionAPI) {
     pi.on("session_before_tree", () => stop());
     pi.on("session_tree", () => stop());
     pi.on("session_shutdown", () => stop());
-    pi.on("message_start", (event) => pending?.scope.messageStart(event.message));
+    pi.on("message_start", (event) => {
+        for (const request of pending.values()) request.scope.messageStart(event.message);
+        const message = event.message;
+        if (message.role !== "custom" || message.customType !== REQUEST_TYPE) return;
+        const incoming = pending.get((message.details as { requestId?: string } | undefined)?.requestId ?? "");
+        if (!incoming) return;
+        for (const request of pending.values()) {
+            if (request !== incoming && request.scope.started && request.task.sessionId === incoming.task.sessionId &&
+                request.task.note.noteId === incoming.task.note.noteId && request.task.version !== incoming.task.version) {
+                request.scope.interrupted = request.cancelled = true;
+            }
+        }
+    });
     pi.on("tool_call", async (event, ctx) => {
         if (event.toolName !== "bash" || !isReplyCommand(event.input.command)) return;
         const call: ReplyCall = {};
         calls.set(event.toolCallId, call);
         try {
             const parsed = parseReplyCommand(event.input.command);
-            const request = pending;
-            if (event.parentToolCallId || !request || request.owner !== watcher || !request.scope.canPost ||
-                (parsed.requestId !== undefined && parsed.requestId !== request.scope.requestId) || parsed.sessionId !== request.task.sessionId ||
+            const request = parsed.requestId ? pending.get(parsed.requestId) : [...pending.values()].findLast((item) =>
+                item.task.sessionId === parsed.sessionId && item.task.note.noteId === parsed.noteId && item.scope.canPost);
+            if (event.parentToolCallId || !request || !currentRequest(request) || !request.scope.canPost ||
+                parsed.sessionId !== request.task.sessionId ||
                 parsed.noteId !== request.task.note.noteId) {
                 return { block: true, reason: "This Hunk reply is no longer an active, uninterrupted request" };
             }
@@ -213,7 +227,7 @@ export default function piHunk(pi: ExtensionAPI) {
             }
             request.scope.attempted = true;
             const post = await request.owner.prepareReply(parsed.sessionId, parsed.noteId, request.task.version, parsed.summary, ctx.signal);
-            if (pending !== request || request.owner !== watcher || !request.scope.canPost) {
+            if (!currentRequest(request) || !request.scope.canPost) {
                 return { block: true, reason: "Hunk watching stopped or another request took over" };
             }
             if (!post) {
@@ -221,6 +235,7 @@ export default function piHunk(pi: ExtensionAPI) {
                 return { block: true, reason: "This comment version already has a confirmed reply in Hunk" };
             }
             call.prepared = true;
+            request.summary = parsed.summary;
             // Continue through normal bash execution and all remaining approval hooks.
         } catch (error) {
             const safe = ["The Hunk session closed or no longer belongs to this repo",
@@ -228,11 +243,38 @@ export default function piHunk(pi: ExtensionAPI) {
             lastNotice = error instanceof ReplyCommandError || (error instanceof Error && safe.includes(error.message))
                 ? error.message : "The Hunk reply command failed validation";
             call.reason = lastNotice;
+            if (call.request) {
+                call.request.problem = lastNotice;
+                if (error instanceof Error && error.message === "The Hunk comment changed or vanished; do not reply to its old version") {
+                    call.request.cancelled = true;
+                }
+            }
             return { block: true, reason: lastNotice };
         }
     });
     pi.on("message_end", async (event, ctx) => {
         const message = event.message;
+        if (message.role === "custom" && message.customType === REQUEST_TYPE) {
+            const request = pending.get((message.details as { requestId?: string } | undefined)?.requestId ?? "");
+            try {
+                if (!request || !currentRequest(request) || request.cancelled) throw new Error("Hunk request cancelled");
+                await request.owner.validateTask(request.task.sessionId, request.task.note.noteId, request.task.version, ctx.signal);
+                if (!currentRequest(request)) throw new Error("Hunk request cancelled");
+            } catch (error) {
+                if (request) {
+                    request.scope.interrupted = true;
+                    request.cancelled = !currentRequest(request) || !!request.cancelled || (error instanceof Error &&
+                        ["Hunk request cancelled", "This comment version is not an active pi-hunk request",
+                            "The Hunk comment changed or vanished; do not reply to its old version",
+                            "The Hunk session closed or no longer belongs to this repo"].includes(error.message));
+                    if (!request.cancelled) request.problem = "The Hunk steering request could not be validated";
+                }
+                // Pi has no per-message steering removal API. Neutralize queued work
+                // cancelled by /hunk off, edits or deletion before it reaches the model.
+                return { message: { ...message, content: "This Hunk request was cancelled or superseded. Ignore it and continue other pending work." } };
+            }
+            return;
+        }
         if (message.role !== "toolResult" || message.toolName !== "bash") return;
         const call = calls.get(message.toolCallId);
         if (!call) return;
@@ -253,21 +295,33 @@ export default function piHunk(pi: ExtensionAPI) {
         return { message: { ...message, isError: !confirmed, content: [{ type: "text" as const,
             text: confirmed ? "Reply confirmed in Hunk." : `Hunk reply not confirmed.${call.reason ? ` ${call.reason}.` : ""} Inspect Hunk and /hunk status before retrying.` }] } };
     });
-    pi.on("agent_settled", (event, ctx) => {
-        const request = pending;
+    pi.on("agent_settled", async (event, ctx) => {
         calls.clear();
-        if (!request || request.owner !== watcher) return;
-        if (!request.scope.started && !event.aborted) return;
-        pending = undefined;
-        const diagnostic = lastNotice;
-        request.owner.settled();
-        if (request.scope.confirmed) {
-            notifySent(request, ctx);
-        } else {
-            lastNotice = diagnostic || (event.aborted ? "The main agent run was aborted before confirmed delivery"
-                : request.scope.interrupted ? "Another request interrupted the Hunk response" : "No Hunk reply was confirmed");
-            if (ctx.hasUI) ctx.ui.notify("Hunk reply was not confirmed. Check /hunk status.", "warning");
+        const owner = watcher;
+        const requests = [...pending.values()].filter((request) => request.owner === owner &&
+            (request.scope.started || event.aborted));
+        let failed = 0;
+        for (const request of requests) {
+            // Cover a transient verification failure or abort after actual delivery.
+            if (!request.scope.confirmed && request.summary && !request.owner.stopped) {
+                try {
+                    request.scope.confirmed = await request.owner.confirmReply(request.task.sessionId,
+                        request.task.note.noteId, request.task.version, request.summary);
+                } catch { /* Never retry posting automatically. */ }
+            }
+            if (!currentRequest(request)) continue;
+            pending.delete(request.scope.requestId);
+            if (request.scope.confirmed) {
+                notifySent(request, ctx);
+            } else if (!request.cancelled) {
+                failed++;
+                lastNotice = request.problem || (event.aborted ? "The main agent run was aborted before confirmed delivery"
+                    : request.scope.interrupted ? "Another request interrupted the Hunk response" : "No Hunk reply was confirmed");
+            }
         }
-        // Only the timer starts the next queued comment.
+        if (watcher !== owner) return;
+        owner?.settled(requests.map((request) => request.task));
+        if (failed && ctx.hasUI) ctx.ui.notify(failed === 1 ? "Hunk reply was not confirmed. Check /hunk status."
+            : `${failed} Hunk replies were not confirmed. Check /hunk status.`, "warning");
     });
 }

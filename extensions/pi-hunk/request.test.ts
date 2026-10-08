@@ -16,6 +16,17 @@ test("posting is scoped to the matching main-agent request, not earlier foregrou
     assert(request.canPost);
 });
 
+test("multiple Hunk steering requests remain independently replyable", () => {
+    const first = new HunkRequest("first"), second = new HunkRequest("second");
+    start(first);
+    first.messageStart({ role: "custom", customType: REQUEST_TYPE, details: { requestId: "second" } });
+    start(second);
+    second.messageStart({ role: "custom", customType: REQUEST_TYPE, details: { requestId: "first" } });
+    assert(first.canPost && second.canPost);
+    for (const request of [first, second]) request.messageStart({ role: "user" });
+    assert(!first.canPost && !second.canPost);
+});
+
 test("delivered steering/custom input prevents subsequent posting for the old comment", () => {
     for (const role of ["user", "custom"]) {
         const request = new HunkRequest("ours");

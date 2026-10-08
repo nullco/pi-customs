@@ -6,7 +6,7 @@ import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { replyCommand, SENT_NOTICE } from "./cli.ts";
+import { parseReplyCommand, replyCommand, SENT_NOTICE } from "./cli.ts";
 
 const packageDir = process.argv[2] ? resolve(process.argv[2])
     : dirname(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))));
@@ -56,46 +56,78 @@ try {
         const tools = getCurrentTools(transcript.messages).map((tool) => tool.name);
         assert(tools.includes("foreground_marker") && tools.includes("bash"));
         assert(!tools.includes("pi_hunk_reply"));
-        const message = transcript.messages.findLast((item) => item.role === "user");
-        const text = typeof message.content === "string" ? message.content : message.content.map((block) => block.text ?? "").join("");
-        if (text.includes("hold foreground")) {
-            const held = gate("foreground");
+        const latest = new Map();
+        const attempted = new Set(), checked = new Set();
+        const markers = new Set();
+        let takeover = -1;
+        let lastPost;
+        for (const [index, message] of transcript.messages.entries()) {
+            const text = typeof message.content === "string" ? message.content
+                : message.content.filter((block) => block.type === "text").map((block) => block.text ?? "").join("");
+            if (message.role === "user" && text.includes("ordinary takeover")) takeover = index;
+            if (message.role === "user" && text.includes("\nHunk requests in ")) {
+                const payload = JSON.parse(text.slice(text.indexOf("\n[") + 1, text.lastIndexOf("]") + 1));
+                assert.equal(payload.length, 1);
+                const requestId = text.match(/# pi-hunk-reply:([0-9a-f-]{36})/)[1];
+                const task = { ...payload[0], requestId, index };
+                latest.set(task.noteId, task);
+                if (!requests.some((item) => item.requestId === requestId)) requests.push(task);
+            }
+            if (message.role !== "assistant") continue;
+            for (const block of message.content) {
+                if (block.type !== "toolCall") continue;
+                if (block.name === "foreground_marker") {
+                    markers.add(block.arguments.noteId);
+                    if (block.arguments.requestId) checked.add(block.arguments.requestId);
+                } else if (block.name === "bash") {
+                    const parsed = parseReplyCommand(block.arguments.command);
+                    const task = parsed.requestId ? requests.find((item) => item.requestId === parsed.requestId)
+                        : latest.get(parsed.noteId === "wrong-note" ? "user:9" : parsed.noteId);
+                    if (task) attempted.add(task.requestId);
+                    lastPost = task;
+                }
+            }
+        }
+        const last = transcript.messages.findLast((message) => message.role !== "system");
+        if (last.role === "toolResult" && last.toolName === "bash" && lastPost?.noteId === "user:4") {
+            const held = gate("user:4");
             held.started = true;
             await held.promise;
-            return fauxAssistantMessage("Ordinary foreground work finished.");
         }
-        if (text.includes("ordinary takeover")) return fauxAssistantMessage("Answer to ordinary takeover.");
-        const start = text.indexOf("\n[");
-        const payload = JSON.parse(text.slice(start + 1, text.lastIndexOf("]") + 1));
-        assert.equal(payload.length, 1);
-        const task = payload[0];
-        const requestId = text.match(/# pi-hunk-reply:([0-9a-f-]{36})/)[1];
-        const last = transcript.messages.findLast((item) => item.role !== "system");
-        if (last.role === "toolResult" && last.toolName === "bash") {
-            if (task.noteId === "user:4") {
-                const held = gate("user:4");
-                held.started = true;
-                await held.promise;
+        // New steering takes priority, but earlier Hunk requests remain addressable.
+        const task = [...latest.values()].findLast((item) => item.index > takeover && !attempted.has(item.requestId));
+        if (task) {
+            if (task.noteId === "user:2") {
+                assert(history.includes("Answer to user:1"));
+                assert(history.includes("Explain this function"));
             }
-            return fauxAssistantMessage(""); // Delivery/failure is an extension notification.
-        }
-        if (last.role === "toolResult") {
+            if (!checked.has(task.requestId)) {
+                return fauxAssistantMessage(fauxToolCall("foreground_marker", { noteId: task.noteId, requestId: task.requestId }), { stopReason: "toolUse" });
+            }
             const body = task.noteId === "user:7" ? `Answer to user:7: ${task.request}` : `Answer to ${task.noteId}`;
-            const command = replyCommand(requestId, task.sessionId, task.noteId === "user:9" ? "wrong-note" : task.noteId, body);
+            const command = replyCommand(task.requestId, task.sessionId, task.noteId === "user:9" ? "wrong-note" : task.noteId, body);
             return fauxAssistantMessage(fauxToolCall("bash", {
-                // Reproduce live models dropping the shell-comment marker.
-                command: ["user:1", "user:2", "user:5", "user:7", "user:8", "user:9"].includes(task.noteId)
+                command: ["user:1", "user:2", "user:5", "user:7", "user:8", "user:9", "user:10"].includes(task.noteId)
                     ? command.slice(command.indexOf("\n") + 1) : command,
             }), { stopReason: "toolUse" });
         }
-        if (task.noteId === "user:2") {
-            assert(history.includes("Answer to user:1"));
-            assert(history.includes("Explain this function"));
+        const ordinary = [...transcript.messages.entries()].findLast(([index, message]) => index > takeover && message.role === "user" &&
+            typeof message.content !== "string" && message.content.some((block) => ["hold foreground", "hold queued", "hold edited"].includes(block.text)))?.[1];
+        const ordinaryText = ordinary?.content.map((block) => block.text ?? "").join("");
+        if (ordinaryText === "hold queued" && !markers.has("queue-hold")) {
+            return fauxAssistantMessage(fauxToolCall("foreground_marker", { noteId: "queue-hold" }), { stopReason: "toolUse" });
         }
-        requests.push({ ...task, requestId });
-        return fauxAssistantMessage(fauxToolCall("foreground_marker", { noteId: task.noteId }), { stopReason: "toolUse" });
+        if (ordinaryText === "hold edited" && !markers.has("edit-hold")) {
+            return fauxAssistantMessage(fauxToolCall("foreground_marker", { noteId: "edit-hold" }), { stopReason: "toolUse" });
+        }
+        if (ordinaryText === "hold foreground") {
+            if (!markers.has("foreground")) return fauxAssistantMessage(fauxToolCall("foreground_marker", { noteId: "foreground" }), { stopReason: "toolUse" });
+            if (!markers.has("foreground-after")) return fauxAssistantMessage(fauxToolCall("foreground_marker", { noteId: "foreground-after" }), { stopReason: "toolUse" });
+            return fauxAssistantMessage("Ordinary foreground work finished.");
+        }
+        return fauxAssistantMessage(takeover >= 0 ? "Answer to ordinary takeover." : ""); // Never narrate Hunk replies.
     };
-    faux.setResponses(Array(40).fill(response));
+    faux.setResponses(Array(100).fill(response));
     const settingsManager = sdk.SettingsManager.inMemory({ packages: [], extensions: [], cacheWarming: "off", retry: { enabled: false } });
     const toolCalls = [];
     const loader = new sdk.DefaultResourceLoader({
@@ -123,9 +155,9 @@ try {
         modelRuntime, settingsManager, resourceLoader: loader, sessionManager: manager,
         customTools: [{
             name: "foreground_marker", label: "Main agent tool", description: "Verify normal main-agent tools work",
-            parameters: Type.Object({ noteId: Type.String() }),
+            parameters: Type.Object({ noteId: Type.String(), requestId: Type.Optional(Type.String()) }),
             async execute(_id, params) {
-                if (["user:3", "user:7", "user:8"].includes(params.noteId)) {
+                if (["foreground", "foreground-after", "queue-hold", "edit-hold", "user:3", "user:7", "user:8", "user:10"].includes(params.noteId)) {
                     const held = gate(params.noteId);
                     held.started = true;
                     await held.promise;
@@ -148,11 +180,12 @@ try {
     await session.prompt("/hunk on");
     const notes = async () => JSON.parse(await readFile(notesPath, "utf8"));
     const hasReply = async (id) => (await notes()).some((item) => item.parentId === id);
-    const addNote = async (id, body) => {
+    const addNotes = async (items) => {
         const list = await notes();
-        list.push({ ...note, noteId: id, body });
+        for (const [id, body] of items) list.push({ ...note, noteId: id, body });
         await writeFile(notesPath, JSON.stringify(list));
     };
+    const addNote = (id, body) => addNotes([[id, body]]);
     await until(() => hasReply("user:1"));
     await until(() => !session.isStreaming);
     assert.deepEqual(session.getActiveToolNames().sort(), baselineTools);
@@ -184,16 +217,22 @@ try {
     assert(renderTool("bash", { command: "echo normal-command-sentinel" }).includes("normal-command-sentinel"));
     assert(!renderTool("write", { path: join(process.env.PI_CODING_AGENT_DIR, "pi-hunk/replies", requests[0].requestId + ".md"), content: "SECRET REPLY" }).includes("SECRET REPLY"));
 
-    // New Hunk requests wait for busy main Pi, but receipt notices do not.
-    const foreground = session.prompt("hold foreground");
+    // Steering is delivered at a tool boundary, before ordinary work continues
+    // or its whole run settles. It does not abort the tool already running.
+    let foregroundSettled = false;
+    const foreground = session.prompt("hold foreground").then(() => { foregroundSettled = true; });
     await until(() => gate("foreground").started);
     await addNote("user:2", "Why?");
-    await new Promise((done) => setTimeout(done, 1200));
+    await until(() => notifications.at(-1) === "Hunk comment received.");
     assert.equal(requests.length, 1);
     assert.equal(notifications.at(-1), "Hunk comment received.");
+    assert(session.isStreaming);
     gate("foreground").done();
+    await until(() => gate("foreground-after").started);
+    assert.equal(await hasReply("user:2"), true);
+    assert.equal(foregroundSettled, false);
+    gate("foreground-after").done();
     await foreground;
-    await until(() => hasReply("user:2"));
 
     // A delivered steering request before posting must not be routed to Hunk.
     await addNote("user:3", "Another question");
@@ -228,6 +267,23 @@ try {
         !message.isError && message.content.some((block) => block.text === "Reply confirmed in Hunk.")));
     assert.equal((await notes()).filter((item) => item.parentId === "user:6").length, 1);
 
+    // Another Hunk comment steers an existing Hunk response. With all-at-once
+    // delivery, both new targets and the earlier markerless target remain valid.
+    session.setSteeringMode("all");
+    await addNote("user:10", "Keep this first question pending");
+    await until(() => gate("user:10").started);
+    await addNotes([["user:11", "A new question while Hunk work is running"], ["user:12", "Another simultaneous question"]]);
+    await until(() => notifications.at(-1) === "2 Hunk comments received.");
+    assert.equal(await hasReply("user:10"), false);
+    gate("user:10").done();
+    await until(() => hasReply("user:10"));
+    await until(() => !session.isStreaming);
+    assert.equal(await hasReply("user:11"), true);
+    assert.equal(await hasReply("user:12"), true);
+    assert.deepEqual((await notes()).filter((item) => ["user:10", "user:11", "user:12"].includes(item.parentId))
+        .map((item) => item.parentId), ["user:12", "user:11", "user:10"]);
+    session.setSteeringMode("one-at-a-time");
+
     // Editing during coding prevents the original version's CLI call. The current
     // version then drains normally, rather than requiring a retry of stale work.
     await addNote("user:7", "Original");
@@ -240,6 +296,25 @@ try {
     await until(() => !session.isStreaming);
     assert.deepEqual((await notes()).filter((item) => item.parentId === "user:7").map((item) => item.body), ["Answer to user:7: Edited"]);
 
+    // A comment edited/deleted while still queued cannot reach the model with
+    // stale instructions. The latest edit is steered without waiting for idle.
+    const edited = session.prompt("hold edited");
+    await until(() => gate("edit-hold").started);
+    await addNotes([["user:15", "STALE QUEUED QUESTION"], ["user:16", "DELETED QUEUED QUESTION"]]);
+    await until(() => notifications.at(-1) === "2 Hunk comments received.");
+    const queuedNotes = await notes();
+    queuedNotes.find((item) => item.noteId === "user:15").body = "Latest queued question";
+    await writeFile(notesPath, JSON.stringify(queuedNotes.filter((item) => item.noteId !== "user:16")));
+    await until(() => notifications.at(-1) === "Hunk comment received.");
+    gate("edit-hold").done();
+    await edited;
+    assert.equal(await hasReply("user:15"), true);
+    assert.equal(await hasReply("user:16"), false);
+    assert.deepEqual(requests.filter((task) => task.noteId === "user:15").map((task) => task.request), ["Latest queued question"]);
+    assert(!requests.some((task) => task.noteId === "user:16"));
+    assert(!JSON.stringify(session.messages).includes("STALE QUEUED QUESTION"));
+    assert(!JSON.stringify(session.messages).includes("DELETED QUEUED QUESTION"));
+
     // Dropping the marker does not bypass matching the active target IDs.
     await addNote("user:9", "Reply to this note only");
     await until(() => requests.some((task) => task.noteId === "user:9"));
@@ -247,7 +322,23 @@ try {
     assert.equal(await hasReply("wrong-note"), false);
     assert.equal(await hasReply("user:9"), false);
 
-    // /hunk off blocks a not-yet-authorized reply without aborting the main agent.
+    // /hunk off neutralizes a steering message still queued behind a running
+    // tool, without aborting that tool or clearing ordinary Pi messages.
+    const queued = session.prompt("hold queued");
+    await until(() => gate("queue-hold").started);
+    await addNote("user:14", "CANCELLED QUESTION MUST NOT REACH MODEL");
+    await until(() => notifications.at(-1) === "Hunk comment received.");
+    await session.prompt("/hunk off");
+    assert(session.isStreaming);
+    gate("queue-hold").done();
+    await queued;
+    assert.equal(await hasReply("user:14"), false);
+    assert(!requests.some((task) => task.noteId === "user:14"));
+    assert(!JSON.stringify(session.messages).includes("CANCELLED QUESTION MUST NOT REACH MODEL"));
+    await writeFile(notesPath, JSON.stringify((await notes()).filter((item) => item.noteId !== "user:14")));
+    await session.prompt("/hunk on");
+
+    // /hunk off also blocks a reply already delivered to the model.
     await addNote("user:8", "Cancel before posting");
     await until(() => gate("user:8").started);
     await session.prompt("/hunk off");
@@ -268,7 +359,7 @@ try {
     assert.match(notifications.pop(), /is off/);
     await session.extensionRunner.emit({ type: "session_shutdown" });
     assert(!renderTool("bash", hidden).includes("SECRET REPLY"));
-    console.log("SDK smoke passed: native direct CLI, no reply files/new tools, quiet chat/history/expansion, main question/reply context, busy receipts, permissions, edits, abort-after-post, lost acknowledgments, off/shutdown.");
+    console.log("SDK smoke passed: native direct CLI, no reply files/new tools, quiet chat/history/expansion, main question/reply context, busy/multiple steering, permissions, queued edits/deletions/cancellation, abort-after-post, lost acknowledgments, off/shutdown.");
 } finally {
     for (const held of gates.values()) held.done();
     if (session) {

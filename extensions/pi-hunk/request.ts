@@ -6,7 +6,7 @@ interface Message {
     details?: unknown;
 }
 
-/** Keep the main agent's tagged CLI call associated with its originating comment. */
+/** Keep each reply associated with its delivered steering request. */
 export class HunkRequest {
     readonly requestId: string;
     started = false;
@@ -23,9 +23,9 @@ export class HunkRequest {
         const details = message.details as { requestId?: unknown } | undefined;
         if (message.role === "custom" && message.customType === REQUEST_TYPE && details?.requestId === this.requestId) {
             this.started = true;
-        } else if (this.started && (message.role === "user" || message.role === "custom")) {
+        } else if (this.started && (message.role === "user" ||
+            (message.role === "custom" && message.customType !== REQUEST_TYPE))) {
             this.interrupted = true;
         }
     }
-
 }
