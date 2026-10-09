@@ -6,7 +6,9 @@ import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { parseReplyCommand, replyCommand, SENT_NOTICE } from "./cli.ts";
+import { isReplyCommand, parseReplyCommand, replyCommand, SENT_NOTICE } from "./cli.ts";
+import { HUNK_SKILL_GUIDELINE } from "./review.ts";
+import { HUNK_SKILL_INSTRUCTIONS } from "./instructions.ts";
 
 const packageDir = process.argv[2] ? resolve(process.argv[2])
     : dirname(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))));
@@ -46,8 +48,28 @@ try {
     await writeFile(sessionsPath, JSON.stringify([{ sessionId: "s", repoRoot: repo }]));
     const note = { noteId: "user:1", source: "user", body: "Explain this function", filePath: "app.ts", newRange: [1, 1] };
     await writeFile(notesPath, JSON.stringify([note]));
+    const skillPath = join(root, "bundled skill", "hunk-review", "SKILL.md");
+    const skillConfigPath = join(root, "skill.json");
+    const skillContent = "---\nname: hunk-review\ndescription: Review live Hunk sessions using the Hunk CLI\n---\n# Hunk review\nHUNK REVIEW SKILL SENTINEL\nUse hunk session commands, not the interactive TUI.\n";
+    await mkdir(dirname(skillPath), { recursive: true });
+    await writeFile(skillPath, skillContent);
+    await writeFile(skillConfigPath, JSON.stringify({ path: skillPath }));
     const executable = join(bin, "hunk");
-    await writeFile(executable, `#!${process.execPath}\nconst fs=require('node:fs');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(callsPath)},JSON.stringify(args)+'\\n');const notes=JSON.parse(fs.readFileSync(${JSON.stringify(notesPath)},'utf8'));if(args[2]==='add'){notes.push({noteId:'agent:'+notes.length,source:'agent',filePath:'app.ts',body:args[args.indexOf('--summary')+1],parentId:args[args.indexOf('--reply-to')+1]});fs.writeFileSync(${JSON.stringify(notesPath)},JSON.stringify(notes));if(args[args.indexOf('--reply-to')+1]==='user:6'){console.error('Lost acknowledgement: '+args.join(' '));process.exit(1);}}console.log(JSON.stringify(args[1]==='list'?{sessions:JSON.parse(fs.readFileSync(${JSON.stringify(sessionsPath)},'utf8'))}:args[2]==='list'?{comments:notes}:{commentId:'agent:1'}));`);
+    await writeFile(executable, `#!${process.execPath}
+const fs=require('node:fs');const args=process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(callsPath)},JSON.stringify(args)+'\\n');
+if(args[0]==='skill'){
+    const config=JSON.parse(fs.readFileSync(${JSON.stringify(skillConfigPath)},'utf8'));
+    if(config.fail){console.error('Skill path is unsupported');process.exit(1);}
+    console.log(config.path);process.exit(0);
+}
+const notes=JSON.parse(fs.readFileSync(${JSON.stringify(notesPath)},'utf8'));
+if(args[2]==='add'){
+    notes.push({noteId:'agent:'+notes.length,source:'agent',filePath:'app.ts',body:args[args.indexOf('--summary')+1],parentId:args.includes('--reply-to')?args[args.indexOf('--reply-to')+1]:undefined});
+    fs.writeFileSync(${JSON.stringify(notesPath)},JSON.stringify(notes));
+    if(args[args.indexOf('--reply-to')+1]==='user:6'){console.error('Lost acknowledgement: '+args.join(' '));process.exit(1);}
+}
+console.log(JSON.stringify(args[1]==='list'?{sessions:JSON.parse(fs.readFileSync(${JSON.stringify(sessionsPath)},'utf8'))}:args[2]==='list'?{comments:notes}:{commentId:'agent:1'}));`);
     await chmod(executable, 0o755);
     process.env.PATH = `${bin}:${oldPath}`;
     const faux = fauxProvider({ provider: "pi-hunk-test", tokensPerSecond: Infinity });
@@ -55,6 +77,7 @@ try {
     const response = async (transcript) => {
         const history = JSON.stringify(transcript.messages);
         assert(history.includes("foreground-context-sentinel"));
+        assert(history.includes(HUNK_SKILL_GUIDELINE) || history.includes(HUNK_SKILL_INSTRUCTIONS));
         const tools = getCurrentTools(transcript.messages).map((tool) => tool.name);
         assert(tools.includes("foreground_marker") && tools.includes("bash"));
         assert(!tools.includes("pi_hunk_reply"));
@@ -81,7 +104,7 @@ try {
                 if (block.name === "foreground_marker") {
                     markers.add(block.arguments.noteId);
                     if (block.arguments.requestId) checked.add(block.arguments.requestId);
-                } else if (block.name === "bash") {
+                } else if (block.name === "bash" && isReplyCommand(block.arguments.command)) {
                     const parsed = parseReplyCommand(block.arguments.command);
                     const task = parsed.requestId ? requests.find((item) => item.requestId === parsed.requestId)
                         : latest.get(parsed.noteId === "wrong-note" ? "user:9" : parsed.noteId);
@@ -99,6 +122,12 @@ try {
         // New steering takes priority, but earlier Hunk requests remain addressable.
         const task = [...latest.values()].findLast((item) => item.index > takeover && !attempted.has(item.requestId));
         if (task) {
+            if (!history.includes("HUNK REVIEW SKILL SENTINEL")) {
+                if (last.role === "toolResult" && last.toolName === "bash" && last.content.some((block) => block.text?.trim() === skillPath)) {
+                    return fauxAssistantMessage(fauxToolCall("read", { path: skillPath }), { stopReason: "toolUse" });
+                }
+                return fauxAssistantMessage(fauxToolCall("bash", { command: "hunk skill path" }), { stopReason: "toolUse" });
+            }
             if (task.noteId === "user:2") {
                 assert(history.includes("Answer to user:1"));
                 assert(history.includes("Explain this function"));
@@ -179,6 +208,8 @@ try {
         },
     });
     const baselineTools = session.getActiveToolNames().sort();
+    assert.deepEqual(loader.getSkills().skills.map((skill) => [skill.name, skill.filePath]), [["hunk-review", skillPath]]);
+    assert.deepEqual(loader.getSkills().diagnostics, []);
     // session_start enables watching automatically; no /hunk on command needed.
     const notes = async () => JSON.parse(await readFile(notesPath, "utf8"));
     const hasReply = async (id) => (await notes()).some((item) => item.parentId === id);
@@ -360,7 +391,8 @@ try {
     assert.equal(notifications.at(-1), "Hunk watching is off.");
     await assert.rejects(stat(join(process.env.PI_CODING_AGENT_DIR, "pi-hunk/replies")), { code: "ENOENT" });
     assert.deepEqual(session.getActiveToolNames().sort(), baselineTools);
-    assert(toolCalls.every((name) => ["foreground_marker", "bash"].includes(name)));
+    assert(toolCalls.every((name) => ["foreground_marker", "bash", "read"].includes(name)));
+    assert.equal(toolCalls.filter((name) => name === "read").length, 1); // Reuse the loaded skill in context.
     assert(!JSON.stringify(notifications).includes("Answer to user:"));
     assert(!session.messages.some((message) => message.role === "assistant" && message.content.some((block) => block.type === "text" && block.text.includes("Answer to user:"))));
     assert.deepEqual(extensionErrors, []);
@@ -392,6 +424,7 @@ try {
             model: faux.getModel(), modelRuntime, settingsManager, resourceLoader: startupLoader,
             sessionManager: sdk.SessionManager.inMemory(cwd),
             ...(options.noBash ? { tools: ["read"] } : {}),
+            ...(options.customTools ? { customTools: options.customTools } : {}),
         });
         const messages = [], selections = [], errors = [];
         const beforePath = process.env.PATH;
@@ -444,18 +477,139 @@ try {
     const gitOnly = join(root, "git-only");
     await mkdir(gitOnly);
     await symlink(execFileSync("which", ["git"]).toString().trim(), join(gitOnly, "git"));
+    const sessionCalls = async () => (await cliCalls()).filter((args) => args[0] === "session");
     for (const options of [{ cwd: outside }, { path: gitOnly }, { noBash: true }]) {
-        const before = (await cliCalls()).length;
+        const before = (await sessionCalls()).length;
         await withStartup(options, async (startup, messages) => {
             assert.deepEqual(messages, []); // No startup error/warning spam.
             await startup.prompt("/hunk status");
             assert.match(messages.pop(), /is off.*\nLast notice:/);
-            assert.equal((await cliCalls()).length, before);
+            assert.equal((await sessionCalls()).length, before);
             await new Promise((done) => setTimeout(done, 5100));
-            assert.equal((await cliCalls()).length, before); // Failed startup leaves no poll timer.
+            assert.equal((await sessionCalls()).length, before); // Skill discovery does not start a poll timer.
         });
     }
-    console.log("SDK smoke passed: on/off notifications, automatic startup/reload, quiet missing prerequisites, waiting/ambiguous windows, native direct CLI, no new tools/files, quiet chat/history, busy/multiple steering, permissions, queued edits/cancellation, abort-after-post, lost acknowledgments, off/shutdown.");
+    // Real SDK reload refreshes the advertised path and removes stale discovered skills.
+    await withStartup({}, async (startup, messages) => {
+        const upgraded = join(root, "upgraded skill", "SKILL.md");
+        await mkdir(dirname(upgraded));
+        await writeFile(upgraded, skillContent.replace("HUNK REVIEW SKILL SENTINEL", "UPGRADED SKILL SENTINEL"));
+        try {
+            await writeFile(skillConfigPath, JSON.stringify({ path: upgraded }));
+            await startup.reload();
+            assert.deepEqual(startup.resourceLoader.getSkills().skills.map((skill) => skill.filePath), [upgraded]);
+            assert.deepEqual(startup.resourceLoader.getSkills().diagnostics, []);
+            assert.deepEqual(messages, []);
+            await writeFile(skillConfigPath, JSON.stringify({ fail: true }));
+            await startup.reload();
+            assert.deepEqual(startup.resourceLoader.getSkills().skills, []);
+            assert.deepEqual(messages, []);
+        } finally {
+            await writeFile(skillConfigPath, JSON.stringify({ path: skillPath }));
+        }
+    });
+
+    // Both natural-language and explicit-command review entrypoints use the same main agent.
+    const reviewTranscripts = [];
+    const textOf = (message) => typeof message.content === "string" ? message.content
+        : message.content.filter((block) => block.type === "text").map((block) => block.text ?? "").join("");
+    const walkthrough = "Hunk review walkthrough.";
+    const reviewed = (startup) => startup.messages.some((message) => message.role === "assistant" && textOf(message) === walkthrough);
+    const rootComment = "hunk session comment add s --file app.ts --new-line 1 --summary 'Review note' --json";
+    faux.setResponses(Array(30).fill(async (transcript) => {
+        reviewTranscripts.push(transcript);
+        const history = JSON.stringify(transcript.messages);
+        assert(history.includes(HUNK_SKILL_GUIDELINE));
+        const user = transcript.messages.findLast((message) => message.role === "user");
+        const last = transcript.messages.findLast((message) => message.role !== "system");
+        const toolCommands = transcript.messages.filter((message) => message.role === "assistant")
+            .flatMap((message) => message.content.filter((block) => block.type === "toolCall"));
+        if (textOf(user) === "hold review foreground") {
+            if (!toolCommands.some((block) => block.name === "hold_review")) {
+                return fauxAssistantMessage(fauxToolCall("hold_review", {}), { stopReason: "toolUse" });
+            }
+            return fauxAssistantMessage("Ordinary foreground work finished.");
+        }
+        if (!history.includes("HUNK REVIEW SKILL SENTINEL")) {
+            if (last.role === "toolResult" && last.toolName === "bash" && textOf(last).trim() === skillPath) {
+                return fauxAssistantMessage(fauxToolCall("read", { path: skillPath }), { stopReason: "toolUse" });
+            }
+            return fauxAssistantMessage(fauxToolCall("bash", { command: "hunk skill path" }), { stopReason: "toolUse" });
+        }
+        if (!toolCommands.some((block) => block.name === "bash" && block.arguments.command === rootComment)) {
+            return fauxAssistantMessage(fauxToolCall("bash", { command: rootComment }), { stopReason: "toolUse" });
+        }
+        return fauxAssistantMessage(walkthrough);
+    }));
+    await withStartup({}, async (startup, messages) => {
+        const tools = startup.getActiveToolNames().sort();
+        await startup.prompt("/hunk off");
+        assert.deepEqual(startup.resourceLoader.getSkills().skills.map((skill) => skill.name), ["hunk-review"]);
+        await startup.prompt("Use Hunk to review the current changes.");
+        assert(reviewed(startup));
+        assert(startup.messages.some((message) => message.role === "toolResult" && message.toolName === "read" && textOf(message).includes("HUNK REVIEW SKILL SENTINEL")));
+        assert(!messages.some((message) => /comment received|Reply sent/.test(message)));
+        assert.deepEqual(startup.getActiveToolNames().sort(), tools);
+    });
+    await withStartup({}, async (startup, messages) => {
+        await startup.prompt("/hunk off");
+        const tools = startup.getActiveToolNames().sort();
+        const before = (await cliCalls()).filter((args) => args[0] === "skill").length;
+        const request = "main...HEAD\nFocus on races; keep  this spacing.";
+        await startup.prompt(`/hunk review ${request}`);
+        await until(() => reviewed(startup) && !startup.isStreaming);
+        const user = startup.messages.find((message) => message.role === "user" && textOf(message).includes("<skill name=\"hunk-review\""));
+        assert(textOf(user).includes(skillContent.trim()));
+        assert(textOf(user).includes(dirname(skillPath)));
+        assert(textOf(user).endsWith(request));
+        assert(sdk.parseSkillBlock(textOf(user))); // Native compact skill rendering is supported.
+        assert(!startup.messages.some((message) => message.role === "toolResult" && message.toolName === "read"));
+        assert.equal((await cliCalls()).filter((args) => args[0] === "skill").length, before + 1);
+        assert(!messages.includes("Hunk review queued."));
+        assert.deepEqual(startup.getActiveToolNames().sort(), tools);
+    });
+    await withStartup({}, async (startup) => {
+        await startup.prompt("/hunk off");
+        await startup.prompt("/skill:hunk-review Walk me through this changeset.");
+        assert(reviewed(startup));
+        assert(startup.messages.some((message) => message.role === "user" && textOf(message).includes("HUNK REVIEW SKILL SENTINEL")));
+    });
+    const reviewGate = gate("review-queue");
+    await withStartup({ customTools: [{
+        name: "hold_review", label: "Hold normal work", description: "Hold ordinary work for queue testing",
+        parameters: Type.Object({}),
+        async execute() {
+            reviewGate.started = true;
+            await reviewGate.promise;
+            return { content: [{ type: "text", text: "Normal work completed" }], details: undefined };
+        },
+    }] }, async (startup, messages) => {
+        await startup.prompt("/hunk off");
+        const foreground = startup.prompt("hold review foreground");
+        await until(() => reviewGate.started);
+        const before = reviewTranscripts.length;
+        await startup.prompt("/hunk review");
+        assert(startup.isStreaming);
+        assert.equal(reviewTranscripts.length, before);
+        await until(() => startup.getFollowUpMessages().length === 1);
+        assert(startup.getFollowUpMessages()[0].includes("Walk me through the current changes"));
+        assert.equal(messages.at(-1), "Hunk review queued.");
+        reviewGate.done();
+        await foreground;
+        await until(() => reviewed(startup) && !startup.isStreaming);
+        assert(startup.messages.some((message) => message.role === "assistant" && textOf(message) === "Ordinary foreground work finished."));
+    });
+    await writeFile(skillConfigPath, JSON.stringify({ fail: true }));
+    await withStartup({}, async (startup, messages) => {
+        assert.deepEqual(messages, []); // Older Hunk can still watch comments without exposing a skill.
+        assert.deepEqual(startup.resourceLoader.getSkills().skills, []);
+        const before = reviewTranscripts.length;
+        await startup.prompt("/hunk review Check error handling");
+        assert.match(messages.at(-1), /Could not load the Hunk review skill/);
+        assert.equal(reviewTranscripts.length, before);
+        assert(!startup.messages.some((message) => message.role === "user"));
+    });
+    console.log("SDK smoke passed: dynamic skill discovery, natural/command/skill review entrypoints, main-agent follow-up queue, quiet startup, native guarded replies, rendering/history, active steering, permissions, cancellation, and off/shutdown.");
 } finally {
     for (const held of gates.values()) held.done();
     if (session) {

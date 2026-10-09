@@ -1,6 +1,6 @@
 # pi-hunk
 
-Handle human Hunk comments with the **main Pi agent**, keeping question/reply bodies out of chat. Pi posts through the **existing bash tool and Hunk CLI**—no intermediate reply files, new model tools, separate agent, or status-bar entry. **Enabled automatically when a Pi session starts.** Requires Git, Hunk's `session comment` CLI, and Pi's `bash` tool enabled.
+Handle human Hunk comments and user-requested reviews with the **main Pi agent**, keeping automated comment/reply bodies out of chat. Pi posts through the **existing bash tool and Hunk CLI**—no intermediate reply files, new model tools, separate agent, or status-bar entry. **Enabled automatically when a Pi session starts.** Requires Git, Hunk's `session comment` CLI, and Pi's `bash` tool enabled.
 
 ```text
 Hunk comment → hidden steering → main Pi codes/checks
@@ -26,6 +26,7 @@ If Git/Hunk is unavailable, the working directory is not a Git checkout, or no m
 
 ## Commands
 
+- `/hunk review [request]` — load Hunk's bundled skill into the main conversation and begin a guided review of this checkout. Without a request, walk through the current live changes; while Pi is busy, queue a follow-up without interrupting active work.
 - `/hunk on` — watch this checkout; choose a session if several windows match.
 - `/hunk on <session-id>` — watch one specific window (`hunk session list --json` lists IDs).
 - `/hunk off` — stop polling until manually enabled or the next session start/reload, neutralize undelivered Hunk steering, and block future pi-hunk reply attempts. Does **not** abort main Pi, undo edits, or recall a CLI command that already passed the guard/is running.
@@ -33,6 +34,16 @@ If Git/Hunk is unavailable, the working directory is not a Git checkout, or no m
 - `/hunk retry` — retry attempts without confirmed delivery, after inspecting what happened.
 
 Watching stops before shutdown, session replacement, fork, or tree navigation. A subsequent session-start event (including reload) enables it automatically again. Tree navigation does not start a new session; run `/hunk on` afterward.
+
+## Skills and user-requested reviews
+
+On bound startup/reload, Pi's `resources_discover` hook runs **`hunk skill path`** and registers the returned `SKILL.md`. The `hunk` executable is resolved from `PATH`; no executable or skill install path is hardcoded, no skill is copied, and no settings change is needed. Missing/older Hunk or an unavailable skill quietly skips discovery. Explicit `/hunk review` reports a missing `hunk` on `PATH`, or an unreadable/unavailable skill, as an error. The path must resolve to a readable, nonempty regular `SKILL.md` of at most 256 KiB. Skill discovery is independent of Git, the selected model, and watcher on/off state.
+
+Pi advertises the skill's name, description, and location; full instructions are loaded only when needed. A small structured system guideline routes Hunk review requests/comments to the skill, with `hunk skill path` as a fallback when it is not listed. Hidden comment requests carry the same loading hint because custom-message turns can bypass Pi's user-input startup hook. The agent reads the skill unless it is already in context; there is no extension-side "loaded" flag that could become stale after compaction.
+
+You can start from ordinary chat ("Use Hunk to review these changes"), **`/skill:hunk-review <request>`**, or **`/hunk review <request>`**. The last resolves and reads the installed skill afresh, embeds its full contents and reference directory in an ordinary user message, and starts the main agent. This guarantees the instructions reach the model even if automatic skill selection/discovery was missed. Normal approvals/tools/extensions still apply; no separate agent or model-facing tool is introduced.
+
+User-requested reviews may be narrated and use Hunk's ordinary comment author. **`pi-hunk` is reserved for guarded automated replies.** `/hunk off` stops the comment watcher, not skill availability or an explicitly requested review. Hunk's interactive UI is never launched inside Pi: if no matching live window exists, the agent asks you to open Hunk in another terminal. Pending discovery/review skill loads are cancelled on session navigation/shutdown; once submitted, a review is ordinary Pi work and follows Pi's normal queue/abort behavior.
 
 ## Main-agent processing
 
@@ -44,7 +55,7 @@ Unanswered existing human notes, new notes, observed edits, and human follow-ups
 
 Each message carries one comment and its own reply target. Multiple delivered comments remain independently replyable, including markerless CLI replies. A newer version supersedes the old version of the same comment; a different Hunk comment does not invalidate earlier unfinished Hunk work. Short receipt notices appear while Pi is busy; multiple newly discovered comments are grouped.
 
-Each hidden request contains the comment, file/line anchor, bounded thread context, a literal CLI reply template, and a minimal routing instruction: address the comment, run the supplied command with a concise shell-quoted reply, keep the bodies out of chat, avoid Hunk acknowledgments in chat, and continue other pending work. The extension supplies delivery/failure notifications. Existing main-agent context, model, tools, and approvals still apply.
+Each hidden request contains the comment, file/line anchor, bounded thread context, a literal CLI reply template, and a minimal routing instruction: load the Hunk skill if needed, address the comment, run the supplied command with a concise shell-quoted reply, keep the bodies out of chat, avoid Hunk acknowledgments in chat, and continue other pending work. The extension supplies delivery/failure notifications. Existing main-agent context, model, tools, and approvals still apply.
 
 The template is a single ordinary bash command:
 
@@ -75,13 +86,13 @@ Pi has no selective suppression API for streamed assistant text, so the prompt i
 
 **“Addressed” means a response was posted, not that Hunk's thread was marked resolved.** A blocker or clarifying question is also a response; add a human follow-up to continue. Inspect partial changes and Hunk before retrying unconfirmed work.
 
-The extension does not publish externally, navigate/reload reviews, restart the daemon, or delete notes. It uses documented CLI polling, not private WebSocket/daemon protocols. Hunk may display an older diff after changes; Pi must inspect current local code. Run only one watcher per review: no cross-process worker lock is provided.
+The extension itself does not publish externally, navigate/reload reviews, restart the daemon, or delete notes. An explicitly requested guided review can use the skill's live-session commands through the main agent and normal approvals. It uses documented CLI polling, not private WebSocket/daemon protocols. Hunk may display an older diff after changes; Pi must inspect current local code. Run only one watcher per review: no cross-process worker lock is provided.
 
 ## Resource use
 
-Polling does not call the model. Each watcher typically performs one local `hunk session list` command per five-second interval, plus one comment-list command when a single matching window is active (roughly 12–24 CLI invocations per minute, fewer if reads are slow). Reply checks add reads while comments are being handled. Timers do not overlap polls or keep Pi alive after shutdown.
+Polling does not call the model. Each watcher typically performs one local `hunk session list` command per five-second interval, plus one comment-list command when a single matching window is active (roughly 12–24 CLI invocations per minute, fewer if reads are slow). Reply checks add reads while comments are being handled. Skill discovery adds one `hunk skill path` query on startup/reload; explicit `/hunk review` resolves the path again and reads the skill. These are not polling tasks. Timers do not overlap polls or keep Pi alive after shutdown.
 
-Model/token cost comes from processing unanswered comments, not idle polling. Multiple Pi instances watching the same checkout multiply polling and can race to handle the same comment: keep one watcher per review and use `/hunk off` in the others.
+Model/token cost comes from processing unanswered comments and requested reviews, not idle polling. Skill discovery alone does not start a model run. Multiple Pi instances watching the same checkout multiply polling and can race to handle the same comment: keep one watcher per review and use `/hunk off` in the others.
 
 ## Tracking
 
@@ -99,7 +110,7 @@ node --test extensions/pi-hunk/*.test.ts
 npm test
 ```
 
-The real Pi-session smoke test uses a scripted provider, native bash/transcript components, and a fake CLI. It verifies on/off notifications, automatic startup/reload, quiet missing prerequisites, waiting/ambiguous windows, zero-row expanded/history rendering for marked and markerless replies, delivery notifications, question/reply context, unchanged tools/hooks, steering during ordinary/Hunk work, multiple reply targets, denied/wrong-target posting, queued edits/deletions/cancellation, abort-after-post, lost acknowledgments, no reply files, and off/shutdown:
+The real Pi-session smoke test uses a scripted provider, native bash/transcript components, and a fake CLI. It verifies dynamic skill discovery, natural-language/command/skill review entrypoints, embedded skill/reference context, main-agent follow-up queuing, on/off notifications, automatic startup/reload, quiet missing prerequisites, waiting/ambiguous windows, zero-row expanded/history rendering for marked and markerless replies, delivery notifications, question/reply context, unchanged tools/hooks, steering during ordinary/Hunk work, multiple reply targets, denied/wrong-target posting, queued edits/deletions/cancellation, abort-after-post, lost acknowledgments, no reply files, and off/shutdown:
 
 ```sh
 node extensions/pi-hunk/sdk-smoke.mjs /path/to/node_modules/@earendil-works/pi-coding-agent

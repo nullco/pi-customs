@@ -7,6 +7,7 @@ import { HunkRequest } from "./request.ts";
 import { createHunkClient, matchingSessions, repoRoot } from "./hunk.ts";
 import { StateStore } from "./state.ts";
 import { replyRenderers } from "./render.ts";
+import { registerHunkReview } from "./review.ts";
 import { HunkWatcher, isNoteState, STATE_ENTRY } from "./watcher.ts";
 import type { Task } from "./watcher.ts";
 const POLL_MS = 5000;
@@ -19,6 +20,7 @@ export default function piHunk(pi: ExtensionAPI) {
     let generation = 0;
     let setup: AbortController | undefined;
     let lastNotice = "";
+    const review = registerHunkReview(pi);
     pi.registerToolRenderer((name, next) => ["bash", "write"].includes(name)
         ? replyRenderers(name, getAgentDir(), next(), (message) => new Text(message, 0, 0), (children, theme, context, previous) => {
             const bg = (line: string) => theme.bg(context.isPartial ? "toolPendingBg"
@@ -168,11 +170,16 @@ export default function piHunk(pi: ExtensionAPI) {
     }
 
     pi.registerCommand("hunk", {
-        description: "Handle Hunk comments in main Pi: on [session-id], off, status, or retry",
+        description: "Hunk in main Pi: review [request], on [session-id], off, status, or retry",
         handler: async (args, ctx) => {
-            const [action = "status", id, ...extra] = args.trim().split(/\s+/).filter(Boolean);
+            const input = args.trim();
+            if (/^review(?:\s|$)/.test(input)) {
+                await review(input.slice("review".length).trim(), ctx);
+                return;
+            }
+            const [action = "status", id, ...extra] = input.split(/\s+/).filter(Boolean);
             if (extra.length || (id && action !== "on")) {
-                ctx.ui.notify("Usage: /hunk on [session-id] | off | status | retry", "warning");
+                ctx.ui.notify("Usage: /hunk review [request] | on [session-id] | off | status | retry", "warning");
                 return;
             }
             switch (action) {
@@ -203,7 +210,7 @@ export default function piHunk(pi: ExtensionAPI) {
                     }
                     break;
                 default:
-                    ctx.ui.notify("Usage: /hunk on [session-id] | off | status | retry", "warning");
+                    ctx.ui.notify("Usage: /hunk review [request] | on [session-id] | off | status | retry", "warning");
             }
         },
     });
