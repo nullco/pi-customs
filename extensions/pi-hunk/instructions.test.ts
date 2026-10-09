@@ -13,6 +13,10 @@ test("the injected prompt stays minimal and preserves reply routing", () => {
     assert.match(HUNK_INSTRUCTIONS, /without shell substitutions or chaining/);
 });
 
+test("ordinary comment requests do not force review skill loading", () => {
+    assert.doesNotMatch(HUNK_INSTRUCTIONS, /hunk-review|hunk skill path|Read .*skill/i);
+});
+
 test("the injected prompt does not prescribe a writing style", () => {
     assert.doesNotMatch(HUNK_INSTRUCTIONS, /concise|plain language|short sentences|paragraph|bullets|jargon|shorthand/i);
 });
