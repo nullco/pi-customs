@@ -44,7 +44,7 @@ Unanswered existing human notes, new notes, observed edits, and human follow-ups
 
 Each message carries one comment and its own reply target. Multiple delivered comments remain independently replyable, including markerless CLI replies. A newer version supersedes the old version of the same comment; a different Hunk comment does not invalidate earlier unfinished Hunk work. Short receipt notices appear while Pi is busy; multiple newly discovered comments are grouped.
 
-Each hidden request contains the comment, file/line anchor, bounded thread context, a literal CLI reply template, and brief response/routing guidance: address the comment, use clear and concise plain language with short sentences and paragraph breaks or bullets when helpful, avoid unexplained jargon and dense shorthand, run the supplied command with a shell-quoted reply, keep the bodies out of chat, avoid Hunk acknowledgments in chat, and continue other pending work. The extension supplies delivery/failure notifications. Existing main-agent context, model, tools, and approvals still apply.
+Each hidden request contains the comment, file/line anchor, bounded thread context, a literal CLI reply template, and minimal routing guidance: address the comment, run the supplied command with a shell-quoted reply, keep the bodies out of chat, avoid Hunk acknowledgments in chat, and continue other pending work. The extension supplies delivery/failure notifications and does not prescribe a reply length or writing style. Existing main-agent context, model, tools, and approvals still apply.
 
 The template is a single ordinary bash command:
 
