@@ -9,7 +9,9 @@ import { StateStore } from "./state.ts";
 import { replyRenderers } from "./render.ts";
 import { HunkWatcher, isNoteState, STATE_ENTRY } from "./watcher.ts";
 import type { Task } from "./watcher.ts";
-const POLL_MS = 1000;
+const POLL_MS = 5000;
+const ON_NOTICE = "Hunk watching is on.";
+const OFF_NOTICE = "Hunk watching is off.";
 
 export default function piHunk(pi: ExtensionAPI) {
     let watcher: HunkWatcher | undefined;
@@ -57,7 +59,13 @@ export default function piHunk(pi: ExtensionAPI) {
         // Do not abort the main agent: it may be handling ordinary Pi requests too.
     }
 
-    async function start(ctx: ExtensionContext, requestedId?: string): Promise<void> {
+    function stopForNavigation(ctx: ExtensionContext): void {
+        const wasOn = !!watcher;
+        stop();
+        if (wasOn && ctx.hasUI) ctx.ui.notify(OFF_NOTICE, "info");
+    }
+
+    async function start(ctx: ExtensionContext, requestedId?: string, automatic = false): Promise<void> {
         stop();
         const token = generation;
         const controller = new AbortController();
@@ -75,11 +83,16 @@ export default function piHunk(pi: ExtensionAPI) {
             if (pinned && !matches.some((session) => session.sessionId === pinned)) {
                 throw new Error("That Hunk session does not belong to this repository or is no longer active");
             }
-            if (!pinned && matches.length > 1) {
+            if (!automatic && !pinned && matches.length > 1) {
                 if (!ctx.hasUI) throw new Error("Multiple Hunk sessions match; use /hunk on <session-id>");
                 const choices = matches.map((session) => `${session.sessionId} — ${session.title ?? "Hunk review"}`);
                 const choice = await ctx.ui.select("Choose a Hunk session for this repository", choices);
-                if (!current() || !choice) return;
+                if (!current()) return;
+                if (!choice) {
+                    stop();
+                    if (ctx.hasUI) ctx.ui.notify(OFF_NOTICE, "info");
+                    return;
+                }
                 pinned = matches[choices.indexOf(choice)]?.sessionId;
                 if (!pinned) return;
             }
@@ -121,6 +134,7 @@ export default function piHunk(pi: ExtensionAPI) {
                 },
             }, initial, pinned);
             watcher = active;
+            if (!automatic && ctx.hasUI) ctx.ui.notify(ON_NOTICE, "info");
 
             const tick = async () => {
                 if (!current() || watcher !== active) return;
@@ -143,7 +157,13 @@ export default function piHunk(pi: ExtensionAPI) {
         } catch (error) {
             if (!current()) return;
             stop();
-            ctx.ui.notify(`Could not enable pi-hunk: ${error instanceof Error ? error.message : String(error)}`, "error");
+            if (automatic) {
+                const reason = error instanceof Error ? error.message : "";
+                lastNotice = ["Select a model in Pi before enabling Hunk", "Enable Pi's existing bash tool before enabling Hunk"].includes(reason)
+                    ? reason : "Automatic Hunk startup failed. Check Git/Hunk availability, then use /hunk on for details.";
+            } else {
+                ctx.ui.notify(`Could not enable pi-hunk: ${error instanceof Error ? error.message : String(error)}`, "error");
+            }
         }
     }
 
@@ -157,15 +177,18 @@ export default function piHunk(pi: ExtensionAPI) {
             }
             switch (action) {
                 case "on":
-                    if (!watcher || id) await start(ctx, id);
+                    if (!watcher || id || watcher.needsSelection) await start(ctx, id);
+                    else if (ctx.hasUI) ctx.ui.notify(ON_NOTICE, "info");
                     break;
                 case "off":
                     stop();
+                    lastNotice = "";
+                    if (ctx.hasUI) ctx.ui.notify(OFF_NOTICE, "info");
                     break;
                 case "status":
                     ctx.ui.notify(watcher
                         ? `${watcher.status()}${lastNotice ? `\nLast notice: ${lastNotice}` : ""}`
-                        : "pi-hunk is off. Use /hunk on to start watching this repository.", "info");
+                        : `pi-hunk is off. Use /hunk on to start watching this repository.${lastNotice ? `\nLast notice: ${lastNotice}` : ""}`, "info");
                     break;
                 case "retry":
                     if (!watcher) {
@@ -185,12 +208,13 @@ export default function piHunk(pi: ExtensionAPI) {
         },
     });
 
-    // No timer or subprocess is started until /hunk on. No status-bar entry is used.
-    pi.on("session_start", () => stop());
-    pi.on("session_before_switch", () => stop());
-    pi.on("session_before_fork", () => stop());
-    pi.on("session_before_tree", () => stop());
-    pi.on("session_tree", () => stop());
+    // Start only with a bound Pi session, never during extension discovery.
+    // Automatic startup stays quiet; explicit commands acknowledge on/off.
+    pi.on("session_start", (_event, ctx) => start(ctx, undefined, true));
+    pi.on("session_before_switch", (_event, ctx) => stopForNavigation(ctx));
+    pi.on("session_before_fork", (_event, ctx) => stopForNavigation(ctx));
+    pi.on("session_before_tree", (_event, ctx) => stopForNavigation(ctx));
+    pi.on("session_tree", (_event, ctx) => stopForNavigation(ctx));
     pi.on("session_shutdown", () => stop());
     pi.on("message_start", (event) => {
         for (const request of pending.values()) request.scope.messageStart(event.message);

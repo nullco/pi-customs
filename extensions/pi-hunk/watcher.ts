@@ -104,6 +104,10 @@ export class HunkWatcher {
 
     get stopped(): boolean { return this.abort.signal.aborted; }
 
+    get needsSelection(): boolean {
+        return !this.pinnedSession && this.lastProblem === "multiple sessions; select with /hunk on <session-id>";
+    }
+
     stop(): void {
         this.abort.abort();
         this.active.clear();

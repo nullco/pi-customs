@@ -2,7 +2,7 @@
 // Pass the installed @earendil-works/pi-coding-agent directory as argv[2].
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -42,10 +42,12 @@ try {
     const { Type, fauxProvider, fauxAssistantMessage, fauxToolCall, getCurrentTools } = await import(pathToFileURL(join(aiRoot, "dist/index.js")));
     const notesPath = join(root, "notes.json");
     const callsPath = join(root, "calls.jsonl");
+    const sessionsPath = join(root, "sessions.json");
+    await writeFile(sessionsPath, JSON.stringify([{ sessionId: "s", repoRoot: repo }]));
     const note = { noteId: "user:1", source: "user", body: "Explain this function", filePath: "app.ts", newRange: [1, 1] };
     await writeFile(notesPath, JSON.stringify([note]));
     const executable = join(bin, "hunk");
-    await writeFile(executable, `#!${process.execPath}\nconst fs=require('node:fs');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(callsPath)},JSON.stringify(args)+'\\n');const notes=JSON.parse(fs.readFileSync(${JSON.stringify(notesPath)},'utf8'));if(args[2]==='add'){notes.push({noteId:'agent:'+notes.length,source:'agent',filePath:'app.ts',body:args[args.indexOf('--summary')+1],parentId:args[args.indexOf('--reply-to')+1]});fs.writeFileSync(${JSON.stringify(notesPath)},JSON.stringify(notes));if(args[args.indexOf('--reply-to')+1]==='user:6'){console.error('Lost acknowledgement: '+args.join(' '));process.exit(1);}}console.log(JSON.stringify(args[1]==='list'?{sessions:[{sessionId:'s',repoRoot:process.cwd()}]}:args[2]==='list'?{comments:notes}:{commentId:'agent:1'}));`);
+    await writeFile(executable, `#!${process.execPath}\nconst fs=require('node:fs');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(callsPath)},JSON.stringify(args)+'\\n');const notes=JSON.parse(fs.readFileSync(${JSON.stringify(notesPath)},'utf8'));if(args[2]==='add'){notes.push({noteId:'agent:'+notes.length,source:'agent',filePath:'app.ts',body:args[args.indexOf('--summary')+1],parentId:args[args.indexOf('--reply-to')+1]});fs.writeFileSync(${JSON.stringify(notesPath)},JSON.stringify(notes));if(args[args.indexOf('--reply-to')+1]==='user:6'){console.error('Lost acknowledgement: '+args.join(' '));process.exit(1);}}console.log(JSON.stringify(args[1]==='list'?{sessions:JSON.parse(fs.readFileSync(${JSON.stringify(sessionsPath)},'utf8'))}:args[2]==='list'?{comments:notes}:{commentId:'agent:1'}));`);
     await chmod(executable, 0o755);
     process.env.PATH = `${bin}:${oldPath}`;
     const faux = fauxProvider({ provider: "pi-hunk-test", tokensPerSecond: Infinity });
@@ -168,6 +170,7 @@ try {
     }));
     const notifications = [];
     const extensionErrors = [];
+    await assert.rejects(readFile(callsPath)); // Discovery/unbound sessions do not start processes.
     await session.bindExtensions({
         mode: "tui", onError: (error) => extensionErrors.push(error),
         uiContext: {
@@ -176,8 +179,7 @@ try {
         },
     });
     const baselineTools = session.getActiveToolNames().sort();
-    await assert.rejects(readFile(callsPath)); // Opt-in only.
-    await session.prompt("/hunk on");
+    // session_start enables watching automatically; no /hunk on command needed.
     const notes = async () => JSON.parse(await readFile(notesPath, "utf8"));
     const hasReply = async (id) => (await notes()).some((item) => item.parentId === id);
     const addNotes = async (items) => {
@@ -190,6 +192,8 @@ try {
     await until(() => !session.isStreaming);
     assert.deepEqual(session.getActiveToolNames().sort(), baselineTools);
     assert.deepEqual(notifications, ["Hunk comment received.", SENT_NOTICE]);
+    await session.prompt("/hunk on"); // Already-on commands still acknowledge the user.
+    assert.equal(notifications.at(-1), "Hunk watching is on.");
     assert(manager.getBranch().some((entry) => entry.type === "custom_message" && entry.customType === "pi-hunk-request" && entry.display === false));
     assert(!session.messages.some((message) => message.role === "assistant" && message.content.some((block) => block.type === "text" && block.text === SENT_NOTICE)));
     assert(session.messages.some((message) => message.role === "assistant" && message.content.some((block) => block.type === "toolCall" && block.name === "bash" && block.arguments.command.includes("Answer to user:1"))));
@@ -329,6 +333,7 @@ try {
     await addNote("user:14", "CANCELLED QUESTION MUST NOT REACH MODEL");
     await until(() => notifications.at(-1) === "Hunk comment received.");
     await session.prompt("/hunk off");
+    assert.equal(notifications.at(-1), "Hunk watching is off.");
     assert(session.isStreaming);
     gate("queue-hold").done();
     await queued;
@@ -337,18 +342,22 @@ try {
     assert(!JSON.stringify(session.messages).includes("CANCELLED QUESTION MUST NOT REACH MODEL"));
     await writeFile(notesPath, JSON.stringify((await notes()).filter((item) => item.noteId !== "user:14")));
     await session.prompt("/hunk on");
+    assert.equal(notifications.at(-1), "Hunk watching is on.");
 
     // /hunk off also blocks a reply already delivered to the model.
     await addNote("user:8", "Cancel before posting");
     await until(() => gate("user:8").started);
     await session.prompt("/hunk off");
+    assert.equal(notifications.at(-1), "Hunk watching is off.");
     assert(session.isStreaming);
     gate("user:8").done();
     await until(() => !session.isStreaming);
     assert.equal(await hasReply("user:8"), false);
     const calls = await readFile(callsPath, "utf8");
-    await new Promise((done) => setTimeout(done, 1100));
+    await new Promise((done) => setTimeout(done, 5100));
     assert.equal(await readFile(callsPath, "utf8"), calls);
+    await session.prompt("/hunk off"); // Already-off commands also acknowledge the user.
+    assert.equal(notifications.at(-1), "Hunk watching is off.");
     await assert.rejects(stat(join(process.env.PI_CODING_AGENT_DIR, "pi-hunk/replies")), { code: "ENOENT" });
     assert.deepEqual(session.getActiveToolNames().sort(), baselineTools);
     assert(toolCalls.every((name) => ["foreground_marker", "bash"].includes(name)));
@@ -357,9 +366,96 @@ try {
     assert.deepEqual(extensionErrors, []);
     await session.prompt("/hunk status");
     assert.match(notifications.pop(), /is off/);
+    const beforeReload = notifications.length;
+    await session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+    assert.equal(notifications.length, beforeReload); // Automatic enabling stays quiet.
+    await session.prompt("/hunk status");
+    assert.match(notifications.pop(), /Hunk: on/);
+    await session.extensionRunner.emit({ type: "session_before_tree", targetId: "unused" });
+    assert.equal(notifications.at(-1), "Hunk watching is off.");
+    const beforeTree = notifications.length;
+    await session.extensionRunner.emit({ type: "session_tree", newLeafId: null, oldLeafId: null });
+    assert.equal(notifications.length, beforeTree); // No duplicate off notice.
     await session.extensionRunner.emit({ type: "session_shutdown" });
     assert(!renderTool("bash", hidden).includes("SECRET REPLY"));
-    console.log("SDK smoke passed: native direct CLI, no reply files/new tools, quiet chat/history/expansion, main question/reply context, busy/multiple steering, permissions, queued edits/deletions/cancellation, abort-after-post, lost acknowledgments, off/shutdown.");
+    // Automatic startup stays quiet and never chooses between ambiguous windows. These cases must not start model work.
+    const cliCalls = async () => (await readFile(callsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    async function withStartup(options, inspect) {
+        const cwd = options.cwd ?? repo;
+        const startupLoader = new sdk.DefaultResourceLoader({
+            cwd, agentDir: process.env.PI_CODING_AGENT_DIR, settingsManager,
+            noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true,
+            additionalExtensionPaths: [join(dirname(fileURLToPath(import.meta.url)), "index.ts")],
+        });
+        await startupLoader.reload();
+        const created = await sdk.createAgentSession({ cwd, agentDir: process.env.PI_CODING_AGENT_DIR,
+            model: faux.getModel(), modelRuntime, settingsManager, resourceLoader: startupLoader,
+            sessionManager: sdk.SessionManager.inMemory(cwd),
+            ...(options.noBash ? { tools: ["read"] } : {}),
+        });
+        const messages = [], selections = [], errors = [];
+        const beforePath = process.env.PATH;
+        try {
+            if (options.path) process.env.PATH = options.path;
+            await created.session.bindExtensions({ mode: "tui", onError: (error) => errors.push(error), uiContext: {
+                notify: (text) => messages.push(text),
+                select: async (_title, choices) => { selections.push(choices); return options.cancelSelection ? undefined : choices[1]; },
+            } });
+            await inspect(created.session, messages, selections);
+            assert(!created.session.messages.some((message) => message.role === "custom" && message.customType === "pi-hunk-request"));
+            assert.deepEqual(errors, []);
+        } finally {
+            await created.session.extensionRunner.emit({ type: "session_shutdown" });
+            await created.session.abort();
+            created.session.dispose();
+            process.env.PATH = beforePath;
+        }
+    }
+    await writeFile(notesPath, JSON.stringify([{ ...note, noteId: "user:startup" }]));
+    await writeFile(sessionsPath, JSON.stringify([{ sessionId: "s", repoRoot: repo }, { sessionId: "s2", repoRoot: repo }]));
+    const ambiguousOptions = { cancelSelection: true };
+    await withStartup(ambiguousOptions, async (startup, messages, selections) => {
+        assert.deepEqual(messages, []);
+        assert.deepEqual(selections, []);
+        await startup.prompt("/hunk status");
+        assert.match(messages.pop(), /multiple sessions/);
+        await writeFile(notesPath, "[]");
+        await startup.prompt("/hunk on"); // Cancelling the selector leaves watching off.
+        assert.equal(messages.at(-1), "Hunk watching is off.");
+        ambiguousOptions.cancelSelection = false;
+        await startup.prompt("/hunk on");
+        assert.equal(messages.at(-1), "Hunk watching is on.");
+        assert.equal(selections.length, 2);
+        assert((await cliCalls()).some((args) => args[2] === "list" && args[3] === "s2"));
+    });
+    await writeFile(sessionsPath, "[]");
+    await withStartup({}, async (startup, messages) => {
+        assert.deepEqual(messages, []);
+        await startup.prompt("/hunk status");
+        assert.match(messages.pop(), /waiting for a Hunk session/);
+        const before = (await cliCalls()).length;
+        await writeFile(sessionsPath, JSON.stringify([{ sessionId: "s", repoRoot: repo }]));
+        await until(async () => (await cliCalls()).slice(before).some((args) => args[2] === "list" && args[3] === "s"));
+        await startup.prompt("/hunk status");
+        assert.match(messages.pop(), /Hunk: on/);
+    });
+    const outside = join(root, "not-a-repo");
+    await mkdir(outside);
+    const gitOnly = join(root, "git-only");
+    await mkdir(gitOnly);
+    await symlink(execFileSync("which", ["git"]).toString().trim(), join(gitOnly, "git"));
+    for (const options of [{ cwd: outside }, { path: gitOnly }, { noBash: true }]) {
+        const before = (await cliCalls()).length;
+        await withStartup(options, async (startup, messages) => {
+            assert.deepEqual(messages, []); // No startup error/warning spam.
+            await startup.prompt("/hunk status");
+            assert.match(messages.pop(), /is off.*\nLast notice:/);
+            assert.equal((await cliCalls()).length, before);
+            await new Promise((done) => setTimeout(done, 5100));
+            assert.equal((await cliCalls()).length, before); // Failed startup leaves no poll timer.
+        });
+    }
+    console.log("SDK smoke passed: on/off notifications, automatic startup/reload, quiet missing prerequisites, waiting/ambiguous windows, native direct CLI, no new tools/files, quiet chat/history, busy/multiple steering, permissions, queued edits/cancellation, abort-after-post, lost acknowledgments, off/shutdown.");
 } finally {
     for (const held of gates.values()) held.done();
     if (session) {

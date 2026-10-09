@@ -187,11 +187,13 @@ test("multiple matching windows pause unless explicitly selected", async (t) => 
     await f.watcher.poll();
     assert.equal(f.sent.length, 0);
     assert.match(f.watcher.status(), /multiple sessions/);
+    assert(f.watcher.needsSelection);
     const pinned = new HunkWatcher(f.repo, f.client, f.ports, [], "session:2");
     t.after(async () => pinned.stop());
     await pinned.poll();
     assert.equal(f.sent.length, 1);
     assert.match(f.sent[0], /session:2/);
+    assert(!pinned.needsSelection);
 });
 
 test("no session waits and resumes automatically when a matching window opens", async (t) => {
