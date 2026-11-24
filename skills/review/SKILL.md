@@ -10,6 +10,12 @@ Review only the changes introduced by the **current branch** compared to the bas
 
 Use `git diff <base>...HEAD` so that the review covers commits added since the current branch diverged, not unrelated changes that landed on the base branch in the meantime.
 
+## Scope rule
+
+- Read unchanged code as needed to validate the impact of the diff. Report problems introduced or worsened by the change, including regressions in unchanged callers or workflows. For each finding, explain what changed and how it causes the problem.
+- Do not widen the PR to fix pre-existing issues that the diff leaves unchanged. An intentionally narrow fix is not a finding just because related problems remain, unless the change itself introduces a regression or makes an existing problem worse.
+- If the changes work as intended and you find no regressions or other actionable issues caused by the diff, say so. Do not manufacture findings.
+
 ## Arguments
 
 - `$1` → base branch to compare against (default: `master`). Use `main`, `staging`, `origin/master`, etc. when appropriate.
@@ -35,7 +41,7 @@ Use `git diff <base>...HEAD` so that the review covers commits added since the c
 
 ## Review criteria
 
-Go through every changed line and flag problems or possible improvements. Assign a severity to each finding:
+Go through every changed line and apply the scope rule above. Assign a severity to each in-scope finding:
 
 - **High** — bugs, logic errors, security vulnerabilities, broken API contracts, data loss or corruption risks, missing authentication/authorization, injection/sandboxing risks, race conditions, secrets in code.
 - **Medium** — missing or weak error handling, unvalidated inputs, performance concerns, duplicated code, unclear naming/abstractions, test coverage gaps, backwards-compatibility concerns.
