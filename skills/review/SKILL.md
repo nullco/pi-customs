@@ -80,6 +80,11 @@ Return a concise markdown report:
 4. **Low findings** — same format.
 5. **Optional focus-area section** — if `$2` was provided, add a short dedicated subsection with findings specifically relevant to that focus.
 6. **Positive notes** (optional) — briefly mention anything that looks well done.
+7. **Final verdict** (required) — end the review with one of these recommendations and a short reason:
+   - **👍 LGTM** — ready to merge based on the evidence reviewed. Clearly mark any remaining suggestions as non-blocking.
+   - **👎 Not ready to merge** — name the blocking finding IDs, or state what validation is needed before you can recommend merging.
+
+Base the verdict on whether anything should block the merge, not on finding count alone. Distinguish verified issues from unconfirmed concerns. The verdict is a recommendation in the report, not authorization to approve or change a PR on the hosting platform.
 
 Be specific, cite file paths and line numbers where possible, and prioritize actionable, high-impact feedback over nitpicks.
 
