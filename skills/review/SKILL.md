@@ -38,12 +38,20 @@ Use `git diff <base>...HEAD` so that the review covers commits added since the c
    ```
    If the diff is very large, split it by file or commit, review each part, and aggregate the findings.
 5. Skip generated/binary files (lockfile churn, compiled assets, images, vendored code) unless the change itself is about those files.
+6. Run the performance regression check below as the first review pass, even when performance is not the requested focus.
+
+## Early performance regression check
+
+- Compare the old and new work on affected paths. Trace callers, especially synchronous requests, default workflows, and batch jobs. Identify what runs per request, per result, and per item within each result, including repeated passes and multiple features that run by default.
+- Look for work that grows faster with input size: nested loops, pair generation, fan-out, extra I/O, full sorts, and large intermediate collections. Verify what each cap actually bounds: output size, distinct candidates, total work, or peak memory. For example, a top-50 output limit does not bound the cost of counting and sorting every pair first.
+- Quantify material risks with realistic input sizes and supported limits where available. State the assumptions and explain the user or service impact (e.g. latency, worker saturation, timeouts, or memory pressure under concurrency). Distinguish work introduced by the diff from existing costs, and necessary work for correctness from avoidable overhead. Check that proposed optimizations preserve correctness.
+- Report actionable risks in the findings, not just as an optional footnote. Distinguish static estimates from measurements. If validation is needed before merge, specify what the author should benchmark (e.g. before/after latency and peak memory for the full default request on representative and large inputs). Do not run code from the diff.
 
 ## Review criteria
 
 Go through every changed line and apply the scope rule above. Assign a severity to each in-scope finding:
 
-- **High** — bugs, logic errors, security vulnerabilities, broken API contracts, data loss or corruption risks, missing authentication/authorization, injection/sandboxing risks, race conditions, secrets in code.
+- **High** — bugs, logic errors, security vulnerabilities, broken API contracts, data loss or corruption risks, missing authentication/authorization, injection/sandboxing risks, race conditions, secrets in code, performance regressions with credible evidence of severe impact (e.g. worker exhaustion or widespread timeouts on supported workloads).
 - **Medium** — missing or weak error handling, unvalidated inputs, performance concerns, duplicated code, unclear naming/abstractions, test coverage gaps, backwards-compatibility concerns.
 - **Low** — style inconsistencies, minor refactoring opportunities, optional documentation/comment improvements, trivial nitpicks.
 
